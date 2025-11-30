@@ -1,0 +1,17 @@
+/* Basic dark crypto theme */
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+  color: #ffffff;
+  margin: 0;
+  padding: 20px;
+}
+.wrap { max-width:720px; margin:20px auto; background: rgba(0,0,0,0.6); padding:20px; border-radius:10px; }
+h1,h2 { margin-top:0; }
+.links a{display:inline-block;margin:8px 8px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px}
+.form input, .form button{display:block;width:100%;padding:10px;margin:8px 0;border-radius:6px;border:1px solid #333;background:#111;color:#fff}
+.card{background:#0b1220;padding:12px;border-radius:8px;margin:8px 0}
+.small{font-size:13px;color:#cfcfcf}
+.fridge{display:flex;justify-content:space-between;align-items:center;padding:8px;border:1px dashed #1f2937;border-radius:6px;margin:8px 0}
+.btn{background:#059669;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer}
+img.fridge-img{width:100px;height:auto;border-radius:6px;margin-right:12px}

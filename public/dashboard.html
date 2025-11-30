@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dashboard - Bitfreeze</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* overlay to put on top of wallpaper if used */
+    .wrap { background: rgba(0,0,0,0.6); }
+    .fridge img { width:100px; height:auto; margin-right:12px; border-radius:6px; }
+    button.buy { background:#f7931a; color:#000; padding:8px 12px; border-radius:6px; border:none; cursor:pointer; }
+    button.buy:hover{ background:#e07f0f }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Your Dashboard</h2>
+    <div id="usercard" class="card">Loading...</div>
+
+    <h3>Deposit (demo)</h3>
+    <div class="card">
+      <input id="depositAmount" placeholder="Amount KES e.g. 500">
+      <button id="doDeposit">Deposit (demo)</button>
+    </div>
+
+    <h3>Withdraw</h3>
+    <div class="card">
+      <input id="withdrawAmount" placeholder="Amount KES e.g. 500">
+      <button id="doWithdraw">Withdraw</button>
+      <p class="small">Minimum withdrawal: KES 200</p>
+    </div>
+
+    <h3>Available Fridges</h3>
+    <div id="fridgelist"></div>
+
+    <p class="small">Logout: <a href="#" id="logout">click</a></p>
+  </div>
+
+<script>
+const token = localStorage.getItem('bf_token');
+// If you want the dashboard to be public for testing, comment the redirect lines
+if (!token) {
+  // uncomment next line to force login during testing:
+  // location.href = 'login.html';
+}
+
+const fridgeImages = {
+  '2ft': 'fridge2ft.jpg',
+  '4ft': 'fridge4ft.jpg',
+  '6ft': 'fridge6ft.jpg',
+  '8ft': 'fridge8ft.jpg',
+  '10ft': 'fridge10ft.jpg',
+  '12ft': 'fridge12ft.jpg'
+};
+
+async function api(path, method='GET', body) {
+  const headers = {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  if (body) headers['content-type']='application/json';
+  const r = await fetch('/api/'+path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  return r.json();
+}
+
+async function load() {
+  let u = { email: 'guest@demo', balance: 0, fridges: [] };
+  if (token) {
+    const me = await api('me');
+    if (!me.error) u = me.user;
+  }
+  document.getElementById('usercard').innerHTML = `<b>${u.email}</b><div class="small">Balance: KES ${u.balance || 0}</div><div class="small">Fridges owned: ${(u.fridges||[]).length}</div>`;
+
+  const list = await api('fridges');
+  const container = document.getElementById('fridgelist');
+  container.innerHTML = '';
+  list.fridges.forEach(f=>{
+    const img = fridgeImages[f.id] || 'placeholder.jpg';
+    const el = document.createElement('div');
+    el.className = 'fridge';
+    el.innerHTML = `<div style="display:flex;align-items:center">
+        <img class="fridge-img" src="images/${img}" alt="${f.name}">
+        <div><b>${f.name}</b><div class="small">Price: KES ${f.price} — Earn: KES ${f.dailyEarn}/day</div></div>
+      </div>
+      <div><button class="buy" data-id="${f.id}">Buy - KES ${f.price}</button></div>`;
+    container.appendChild(el);
+  });
+
+  document.querySelectorAll('.buy').forEach(b=>{
+    b.onclick = async (e) => {
+      const id = e.target.dataset.id;
+      if (!token) return alert('Please login to buy (demo)');
+      const res = await api('buy','POST',{fridgeId: id});
+      if (res.error) alert(res.error); else { alert(res.message); load(); }
+    };
+  });
+}
+
+document.getElementById('doDeposit').onclick = async () => {
+  const a = Number(document.getElementById('depositAmount').value || 0);
+  if (!a) return alert('Enter amount');
+  if (!token) return alert('Login first (demo deposit)');
+  const r = await api('deposit','POST',{amount: a});
+  if (r.error) alert(r.error); else { alert('Deposited (demo). New balance: '+r.balance); load(); }
+};
+
+document.getElementById('doWithdraw').onclick = async () => {
+  const a = Number(document.getElementById('withdrawAmount').value || 0);
+  if (!a) return alert('Enter amount');
+  if (!token) return alert('Login first (demo withdraw)');
+  const r = await api('withdraw','POST',{amount: a});
+  if (r.error) alert(r.error); else { alert(r.message); load(); }
+};
+
+document.getElementById('logout').onclick = () => { localStorage.removeItem('bf_token'); location.href='login.html'; };
+
+load();
+</script>
+</body>
+</html>
