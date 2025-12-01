@@ -1,32 +1,44 @@
 <!doctype html>
-<html><head>
-  <meta charset="utf-8"><title>Login - Bitfreeze</title>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Login - Bitfreeze</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="styles.css">
-</head><body>
+</head>
+<body>
   <div class="wrap">
     <h2>Login</h2>
-    <div class="form">
-      <input id="email" placeholder="Email">
-      <input id="password" type="password" placeholder="Password">
+    <div class="card form">
+      <input id="identifier" type="text" placeholder="Email or Phone" />
+      <input id="password" type="password" placeholder="Password" />
       <button id="doLogin">Login</button>
       <p class="small">New? <a href="register.html">Register</a></p>
-      <div id="msg"></div>
+      <div id="msg" class="small"></div>
     </div>
   </div>
 
 <script>
 document.getElementById('doLogin').onclick = async () => {
-  const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value.trim();
-  if(!email || !password) return alert('Enter email and password');
-  const r = await fetch('/api/login', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password})});
+  const identifier = document.getElementById('identifier').value.trim();
+  const password = document.getElementById('password').value;
+  if (!identifier || !password) { alert('All fields required'); return; }
+
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ identifier, password })
+  });
   const j = await r.json();
-  if (j.token) {
-    localStorage.setItem('bf_token', j.token);
-    location.href = 'dashboard.html';
+  if (j.error) {
+    document.getElementById('msg').innerText = j.error;
   } else {
-    document.getElementById('msg').innerText = j.error || JSON.stringify(j);
+    if (j.token) localStorage.setItem('bf_token', j.token);
+    if (j.email) localStorage.setItem('bf_user_email', j.email);
+    if (j.phone) localStorage.setItem('bf_user_phone', j.phone);
+    location.href = 'dashboard.html';
   }
 };
 </script>
-</body></html>
+</body>
+</html>

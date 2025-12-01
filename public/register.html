@@ -1,28 +1,39 @@
 <!doctype html>
-<html><head>
-  <meta charset="utf-8"><title>Register - Bitfreeze</title>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Register - Bitfreeze</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="styles.css">
-</head><body>
+</head>
+<body>
   <div class="wrap">
     <h2>Register</h2>
-    <div class="form">
-      <input id="email" placeholder="Email">
-      <input id="password" type="password" placeholder="Password">
+    <div class="card form">
+      <input id="email" type="email" placeholder="Email" />
+      <input id="phone" type="text" placeholder="Phone (e.g. 0712345678)" />
+      <input id="password" type="password" placeholder="Password" />
       <button id="doRegister">Register</button>
       <p class="small">Already have an account? <a href="login.html">Login</a></p>
-      <div id="msg"></div>
+      <div id="msg" class="small"></div>
     </div>
   </div>
 
 <script>
 document.getElementById('doRegister').onclick = async () => {
   const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value.trim();
-  if(!email || !password) return alert('Enter email and password');
-  const r = await fetch('/api/register', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password})});
+  const phone = document.getElementById('phone').value.trim();
+  const password = document.getElementById('password').value;
+  if (!email || !phone || !password) { alert('All fields required'); return; }
+
+  const r = await fetch('/api/register', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ email, phone, password })
+  });
   const j = await r.json();
-  document.getElementById('msg').innerText = j.message || j.error || JSON.stringify(j);
-  if (j.message) setTimeout(()=>location.href='login.html',800);
+  document.getElementById('msg').innerText = j.error || j.message;
 };
 </script>
-</body></html>
+</body>
+</html>
