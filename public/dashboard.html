@@ -6,11 +6,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="styles.css">
   <style>
-    /* overlay to put on top of wallpaper if used */
-    .wrap { background: rgba(0,0,0,0.6); }
-    .fridge img { width:100px; height:auto; margin-right:12px; border-radius:6px; }
-    button.buy { background:#f7931a; color:#000; padding:8px 12px; border-radius:6px; border:none; cursor:pointer; }
-    button.buy:hover{ background:#e07f0f }
+    body { font-family: Arial, sans-serif; background: #0f1720; color: #fff; }
+    .wrap { padding: 20px; max-width: 900px; margin: auto; background: rgba(0,0,0,0.4); border-radius: 8px; }
+    .card { background: rgba(255,255,255,0.04); padding: 15px; margin: 10px 0; border-radius: 8px; }
+    .small { font-size: 0.9em; color: #ddd; }
+    .fridge { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.03); }
+    .fridge img { width: 100px; height: auto; margin-right: 10px; }
+    input, button { padding:8px; margin:6px 0; border-radius:6px; border:1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: #fff; width:100%; box-sizing:border-box; }
+    button { cursor:pointer; }
+    .form-row { display:flex; gap:8px; }
+    .form-row > * { flex:1; }
+    .btn { padding:8px 12px; border-radius:6px; background:#ffb000; color:#000; border:none; cursor:pointer; }
   </style>
 </head>
 <body>
@@ -18,101 +24,108 @@
     <h2>Your Dashboard</h2>
     <div id="usercard" class="card">Loading...</div>
 
-    <h3>Deposit (demo)</h3>
+    <h3>Deposit 💰</h3>
     <div class="card">
-      <input id="depositAmount" placeholder="Amount KES e.g. 500">
-      <button id="doDeposit">Deposit (demo)</button>
+      <div class="form-row">
+        <input id="depositPhone" placeholder="Your phone (07...)" />
+      </div>
+      <input id="depositAmount" placeholder="Amount KES e.g. 500" />
+      <button id="doDeposit" class="btn">Deposit 💰</button>
+      <div id="depositMsg" class="small"></div>
     </div>
 
-    <h3>Withdraw</h3>
+    <h3>Withdraw 💸</h3>
     <div class="card">
-      <input id="withdrawAmount" placeholder="Amount KES e.g. 500">
-      <button id="doWithdraw">Withdraw</button>
-      <p class="small">Minimum withdrawal: KES 200</p>
+      <input id="withdrawAmount" placeholder="Amount KES e.g. 500" />
+      <input id="withdrawPhone" placeholder="Phone used to deposit (07...)" />
+      <button id="doWithdraw" class="btn">Withdraw 💸</button>
+      <div id="withdrawMsg" class="small"></div>
     </div>
 
-    <h3>Available Fridges</h3>
-    <div id="fridgelist"></div>
+    <h3>Available Fridges 🧊</h3>
+    <div id="fridgelist" class="card"></div>
 
     <p class="small">Logout: <a href="#" id="logout">click</a></p>
   </div>
 
 <script>
 const token = localStorage.getItem('bf_token');
-// If you want the dashboard to be public for testing, comment the redirect lines
-if (!token) {
-  // uncomment next line to force login during testing:
-  // location.href = 'login.html';
-}
-
-const fridgeImages = {
-  '2ft': 'fridge2ft.jpg',
-  '4ft': 'fridge4ft.jpg',
-  '6ft': 'fridge6ft.jpg',
-  '8ft': 'fridge8ft.jpg',
-  '10ft': 'fridge10ft.jpg',
-  '12ft': 'fridge12ft.jpg'
-};
+if (!token) location.href = 'login.html';
 
 async function api(path, method='GET', body) {
-  const headers = {};
-  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const headers = { 'Authorization': 'Bearer ' + token };
   if (body) headers['content-type']='application/json';
   const r = await fetch('/api/'+path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   return r.json();
 }
 
+// Load user info & fridges
 async function load() {
-  let u = { email: 'guest@demo', balance: 0, fridges: [] };
-  if (token) {
-    const me = await api('me');
-    if (!me.error) u = me.user;
-  }
-  document.getElementById('usercard').innerHTML = `<b>${u.email}</b><div class="small">Balance: KES ${u.balance || 0}</div><div class="small">Fridges owned: ${(u.fridges||[]).length}</div>`;
+  const me = await api('me');
+  if (me.error) { alert('Session expired'); localStorage.removeItem('bf_token'); location.href='login.html'; return; }
+  const u = me.user;
+
+  document.getElementById('usercard').innerHTML = `<b>${u.email}</b>
+    <div class="small">Balance: 💰 KES ${u.balance || 0}</div>
+    <div class="small">Fridges owned: ${(u.fridges||[]).length}</div>`;
 
   const list = await api('fridges');
   const container = document.getElementById('fridgelist');
   container.innerHTML = '';
   list.fridges.forEach(f=>{
-    const img = fridgeImages[f.id] || 'placeholder.jpg';
     const el = document.createElement('div');
     el.className = 'fridge';
     el.innerHTML = `<div style="display:flex;align-items:center">
-        <img class="fridge-img" src="images/${img}" alt="${f.name}">
-        <div><b>${f.name}</b><div class="small">Price: KES ${f.price} — Earn: KES ${f.dailyEarn}/day</div></div>
+        <img src="images/fridge2ft.jpg" alt="${f.name}">
+        <div>
+          <b>${f.name}</b>
+          <div class="small">Price: 💰 KES ${f.price} — Earn: 💰 ${f.dailyEarn}/day</div>
+        </div>
       </div>
-      <div><button class="buy" data-id="${f.id}">Buy - KES ${f.price}</button></div>`;
+      <div>
+        <button class="btn buy" data-id="${f.id}">Buy 💰 ${f.price}</button>
+      </div>`;
     container.appendChild(el);
   });
 
   document.querySelectorAll('.buy').forEach(b=>{
     b.onclick = async (e) => {
       const id = e.target.dataset.id;
-      if (!token) return alert('Please login to buy (demo)');
       const res = await api('buy','POST',{fridgeId: id});
       if (res.error) alert(res.error); else { alert(res.message); load(); }
     };
   });
 }
 
+// Deposit
 document.getElementById('doDeposit').onclick = async () => {
-  const a = Number(document.getElementById('depositAmount').value || 0);
-  if (!a) return alert('Enter amount');
-  if (!token) return alert('Login first (demo deposit)');
-  const r = await api('deposit','POST',{amount: a});
-  if (r.error) alert(r.error); else { alert('Deposited (demo). New balance: '+r.balance); load(); }
+  const amount = Number(document.getElementById('depositAmount').value || 0);
+  const phone = (document.getElementById('depositPhone').value || '').trim();
+  const msg = document.getElementById('depositMsg');
+  msg.innerText = '';
+  if (!amount || !phone) { msg.innerText = 'Enter amount and phone 💰'; return; }
+
+  const r = await api('deposit','POST',{ amount, phone });
+  if (r.error) msg.innerText = r.error; else { msg.innerText = r.message + ' 💰'; load(); }
 };
 
+// Withdraw
 document.getElementById('doWithdraw').onclick = async () => {
-  const a = Number(document.getElementById('withdrawAmount').value || 0);
-  if (!a) return alert('Enter amount');
-  if (!token) return alert('Login first (demo withdraw)');
-  const r = await api('withdraw','POST',{amount: a});
-  if (r.error) alert(r.error); else { alert(r.message); load(); }
+  const amount = Number(document.getElementById('withdrawAmount').value || 0);
+  const phone = (document.getElementById('withdrawPhone').value || '').trim();
+  const msg = document.getElementById('withdrawMsg');
+  msg.innerText = '';
+  if (!amount || !phone) { msg.innerText = 'Enter amount and phone 💸'; return; }
+
+  const r = await api('withdraw','POST',{ amount, phone });
+  if (r.error) msg.innerText = r.error; else { msg.innerText = r.message + ' 💸'; load(); }
 };
 
+// Logout
 document.getElementById('logout').onclick = () => { localStorage.removeItem('bf_token'); location.href='login.html'; };
 
+// Auto refresh every 30s for live balance (including daily earnings)
+setInterval(load, 30000);
 load();
 </script>
 </body>
