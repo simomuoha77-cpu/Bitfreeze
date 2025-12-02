@@ -10,7 +10,7 @@
   <div class="wrap">
     <h2>Login</h2>
     <div class="card form">
-      <input id="identifier" type="text" placeholder="Email or Phone" />
+      <input id="identifier" type="text" placeholder="Email or Phone (e.g. me@example.com or 0712345678)" />
       <input id="password" type="password" placeholder="Password" />
       <button id="doLogin">Login</button>
       <p class="small">New? <a href="register.html">Register</a></p>
@@ -22,7 +22,7 @@
 document.getElementById('doLogin').onclick = async () => {
   const identifier = document.getElementById('identifier').value.trim();
   const password = document.getElementById('password').value;
-  if (!identifier || !password) { alert('All fields required'); return; }
+  if (!identifier || !password) { alert('Enter identifier and password'); return; }
 
   const r = await fetch('/api/login', {
     method: 'POST',

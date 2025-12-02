@@ -11,29 +11,41 @@
     <h2>Register</h2>
     <div class="card form">
       <input id="email" type="email" placeholder="Email" />
-      <input id="phone" type="text" placeholder="Phone (e.g. 0712345678)" />
+      <input id="phone" type="text" placeholder="Phone (07...)" />
       <input id="password" type="password" placeholder="Password" />
       <button id="doRegister">Register</button>
-      <p class="small">Already have an account? <a href="login.html">Login</a></p>
+      <p class="small">Have an account? <a href="login.html">Login</a></p>
       <div id="msg" class="small"></div>
     </div>
   </div>
 
 <script>
-document.getElementById('doRegister').onclick = async () => {
-  const email = document.getElementById('email').value.trim();
-  const phone = document.getElementById('phone').value.trim();
-  const password = document.getElementById('password').value;
-  if (!email || !phone || !password) { alert('All fields required'); return; }
+document.addEventListener('DOMContentLoaded', () => {
+  const urlParams = new URLSearchParams(window.location.search);
+  const ref = urlParams.get('ref') || '';
 
-  const r = await fetch('/api/register', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ email, phone, password })
-  });
-  const j = await r.json();
-  document.getElementById('msg').innerText = j.error || j.message;
-};
+  document.getElementById('doRegister').onclick = async () => {
+    const email = document.getElementById('email').value.trim();
+    const phone = document.getElementById('phone').value.trim();
+    const password = document.getElementById('password').value;
+    if (!email || !password) { alert('Email and password required'); return; }
+
+    const body = { email, phone, password };
+    if (ref) body.ref = ref;
+
+    const r = await fetch('/api/register', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    if (j.error) document.getElementById('msg').innerText = j.error;
+    else {
+      alert('Registered. Please login.');
+      location.href = 'login.html';
+    }
+  };
+});
 </script>
 </body>
 </html>

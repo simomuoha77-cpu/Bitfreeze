@@ -17,6 +17,7 @@
     .form-row { display:flex; gap:8px; }
     .form-row > * { flex:1; }
     .btn { padding:8px 12px; border-radius:6px; background:#ffb000; color:#000; border:none; cursor:pointer; }
+    .copy { margin-top:8px; }
   </style>
 </head>
 <body>
@@ -24,13 +25,16 @@
     <h2>Your Dashboard</h2>
     <div id="usercard" class="card">Loading...</div>
 
+    <div id="referralCard" class="card small"></div>
+
     <h3>Deposit 💰</h3>
     <div class="card">
       <div class="form-row">
         <input id="depositPhone" placeholder="Your phone (07...)" />
       </div>
       <input id="depositAmount" placeholder="Amount KES e.g. 500" />
-      <button id="doDeposit" class="btn">Deposit 💰</button>
+      <button id="doDeposit" class="btn">Deposit 💰 (Simulated STK)</button>
+      <p class="small">A payment prompt will be sent to your phone — enter your M-PESA PIN on your phone to confirm. Funds go to the site account (0707389787) and will be credited to your balance once confirmed.</p>
       <div id="depositMsg" class="small"></div>
     </div>
 
@@ -39,6 +43,7 @@
       <input id="withdrawAmount" placeholder="Amount KES e.g. 500" />
       <input id="withdrawPhone" placeholder="Phone used to deposit (07...)" />
       <button id="doWithdraw" class="btn">Withdraw 💸</button>
+      <p class="small">Minimum withdrawal: KES 200. Only the phone used to deposit can withdraw.</p>
       <div id="withdrawMsg" class="small"></div>
     </div>
 
@@ -59,16 +64,29 @@ async function api(path, method='GET', body) {
   return r.json();
 }
 
-// Load user info & fridges
 async function load() {
   const me = await api('me');
   if (me.error) { alert('Session expired'); localStorage.removeItem('bf_token'); location.href='login.html'; return; }
   const u = me.user;
-
   document.getElementById('usercard').innerHTML = `<b>${u.email}</b>
+    <div class="small">Phone: ${u.phone || '—'}</div>
     <div class="small">Balance: 💰 KES ${u.balance || 0}</div>
     <div class="small">Fridges owned: ${(u.fridges||[]).length}</div>`;
 
+  // referral card
+  const referralCard = document.getElementById('referralCard');
+  const referralLink = u.referralLink || `${location.origin}/register.html?ref=${u.referralCode}`;
+  referralCard.innerHTML = `
+    <div><b>Your referral link</b></div>
+    <div style="word-break:break-all; margin:6px 0">${referralLink}</div>
+    <button id="copyRef" class="btn copy">Copy referral link</button>
+    <div class="small">Referral earnings: KES ${u.referralEarned || 0} — Earn according to deposit tiers (min KES 500).</div>
+  `;
+  document.getElementById('copyRef').onclick = () => {
+    navigator.clipboard?.writeText(referralLink).then(()=> alert('Link copied to clipboard'));
+  };
+
+  // fridges
   const list = await api('fridges');
   const container = document.getElementById('fridgelist');
   container.innerHTML = '';
@@ -97,7 +115,6 @@ async function load() {
   });
 }
 
-// Deposit
 document.getElementById('doDeposit').onclick = async () => {
   const amount = Number(document.getElementById('depositAmount').value || 0);
   const phone = (document.getElementById('depositPhone').value || '').trim();
@@ -105,27 +122,26 @@ document.getElementById('doDeposit').onclick = async () => {
   msg.innerText = '';
   if (!amount || !phone) { msg.innerText = 'Enter amount and phone 💰'; return; }
 
-  const r = await api('deposit','POST',{ amount, phone });
+  // For demo: ask user for PIN prompt (simulated). In production you do STK push and no PIN entered in site.
+  const mpesaPin = prompt('Enter your M-PESA PIN (simulation):');
+  if (!mpesaPin) { msg.innerText = 'M-PESA PIN required'; return; }
+
+  const r = await api('deposit','POST',{ amount, phone, mpesaPin });
   if (r.error) msg.innerText = r.error; else { msg.innerText = r.message + ' 💰'; load(); }
 };
 
-// Withdraw
 document.getElementById('doWithdraw').onclick = async () => {
   const amount = Number(document.getElementById('withdrawAmount').value || 0);
   const phone = (document.getElementById('withdrawPhone').value || '').trim();
   const msg = document.getElementById('withdrawMsg');
   msg.innerText = '';
   if (!amount || !phone) { msg.innerText = 'Enter amount and phone 💸'; return; }
-
   const r = await api('withdraw','POST',{ amount, phone });
   if (r.error) msg.innerText = r.error; else { msg.innerText = r.message + ' 💸'; load(); }
 };
 
-// Logout
 document.getElementById('logout').onclick = () => { localStorage.removeItem('bf_token'); location.href='login.html'; };
 
-// Auto refresh every 30s for live balance (including daily earnings)
-setInterval(load, 30000);
 load();
 </script>
 </body>
