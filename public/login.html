@@ -10,7 +10,7 @@
   <div class="wrap">
     <h2>Login</h2>
     <div class="card form">
-      <input id="identifier" type="text" placeholder="Email or Phone (e.g. me@example.com or 0712345678)" />
+      <input id="identifier" type="text" placeholder="Email or Phone" />
       <input id="password" type="password" placeholder="Password" />
       <button id="doLogin">Login</button>
       <p class="small">New? <a href="register.html">Register</a></p>
@@ -20,22 +20,18 @@
 
 <script>
 document.getElementById('doLogin').onclick = async () => {
-  const identifier = document.getElementById('identifier').value.trim();
-  const password = document.getElementById('password').value;
-  if (!identifier || !password) { alert('Enter identifier and password'); return; }
-
+  const identifier = (document.getElementById('identifier').value || '').trim();
+  const password = document.getElementById('password').value || '';
   const r = await fetch('/api/login', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ identifier, password })
   });
   const j = await r.json();
-  if (j.error) {
-    document.getElementById('msg').innerText = j.error;
-  } else {
-    if (j.token) localStorage.setItem('bf_token', j.token);
-    if (j.email) localStorage.setItem('bf_user_email', j.email);
-    if (j.phone) localStorage.setItem('bf_user_phone', j.phone);
+  if (j.error) document.getElementById('msg').innerText = j.error;
+  else {
+    localStorage.setItem('bf_token', j.token);
+    localStorage.setItem('bf_user_email', j.email);
     location.href = 'dashboard.html';
   }
 };

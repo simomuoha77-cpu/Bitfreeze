@@ -10,42 +10,34 @@
   <div class="wrap">
     <h2>Register</h2>
     <div class="card form">
-      <input id="email" type="email" placeholder="Email" />
-      <input id="phone" type="text" placeholder="Phone (07...)" />
+      <input id="email" placeholder="Email (e.g. you@example.com)" />
+      <input id="phone" placeholder="Phone (07...)" />
       <input id="password" type="password" placeholder="Password" />
       <button id="doRegister">Register</button>
-      <p class="small">Have an account? <a href="login.html">Login</a></p>
+      <p class="small">Already have an account? <a href="login.html">Login</a></p>
       <div id="msg" class="small"></div>
     </div>
   </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', () => {
-  const urlParams = new URLSearchParams(window.location.search);
-  const ref = urlParams.get('ref') || '';
+document.getElementById('doRegister').onclick = async () => {
+  const email = (document.getElementById('email').value || '').trim();
+  const phone = (document.getElementById('phone').value || '').trim();
+  const password = (document.getElementById('password').value || '').trim();
 
-  document.getElementById('doRegister').onclick = async () => {
-    const email = document.getElementById('email').value.trim();
-    const phone = document.getElementById('phone').value.trim();
-    const password = document.getElementById('password').value;
-    if (!email || !password) { alert('Email and password required'); return; }
+  // check referral param in URL
+  const url = new URL(window.location.href);
+  const ref = url.searchParams.get('ref');
 
-    const body = { email, phone, password };
-    if (ref) body.ref = ref;
-
-    const r = await fetch('/api/register', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body)
-    });
-    const j = await r.json();
-    if (j.error) document.getElementById('msg').innerText = j.error;
-    else {
-      alert('Registered. Please login.');
-      location.href = 'login.html';
-    }
-  };
-});
+  const r = await fetch('/api/register', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ email, phone, password, ref })
+  });
+  const j = await r.json();
+  if (j.error) document.getElementById('msg').innerText = j.error;
+  else { alert('Registered, please login'); location.href = 'login.html'; }
+};
 </script>
 </body>
 </html>

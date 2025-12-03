@@ -13,11 +13,10 @@
     .fridge { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.03); }
     .fridge img { width: 100px; height: auto; margin-right: 10px; }
     input, button { padding:8px; margin:6px 0; border-radius:6px; border:1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: #fff; width:100%; box-sizing:border-box; }
-    button { cursor:pointer; }
     .form-row { display:flex; gap:8px; }
     .form-row > * { flex:1; }
     .btn { padding:8px 12px; border-radius:6px; background:#ffb000; color:#000; border:none; cursor:pointer; }
-    .copy { margin-top:8px; }
+    .referral { background: rgba(255,255,255,0.06); padding:10px; border-radius:6px; margin:10px 0; }
   </style>
 </head>
 <body>
@@ -25,7 +24,11 @@
     <h2>Your Dashboard</h2>
     <div id="usercard" class="card">Loading...</div>
 
-    <div id="referralCard" class="card small"></div>
+    <div class="referral card">
+      <strong>Your Referral Link:</strong>
+      <div id="referralLink">Loading...</div>
+      <p class="small">Share this link. When a friend registers with it and deposits, you'll get rewards.</p>
+    </div>
 
     <h3>Deposit 💰</h3>
     <div class="card">
@@ -33,8 +36,8 @@
         <input id="depositPhone" placeholder="Your phone (07...)" />
       </div>
       <input id="depositAmount" placeholder="Amount KES e.g. 500" />
-      <button id="doDeposit" class="btn">Deposit 💰 (Simulated STK)</button>
-      <p class="small">A payment prompt will be sent to your phone — enter your M-PESA PIN on your phone to confirm. Funds go to the site account (0707389787) and will be credited to your balance once confirmed.</p>
+      <button id="doDeposit" class="btn">Deposit 💰 (STK / Sim)</button>
+      <p class="small" id="depositNote">A payment prompt will be sent to your phone (if Daraja enabled). Otherwise local simulation is used.</p>
       <div id="depositMsg" class="small"></div>
     </div>
 
@@ -42,13 +45,13 @@
     <div class="card">
       <input id="withdrawAmount" placeholder="Amount KES e.g. 500" />
       <input id="withdrawPhone" placeholder="Phone used to deposit (07...)" />
-      <button id="doWithdraw" class="btn">Withdraw 💸</button>
-      <p class="small">Minimum withdrawal: KES 200. Only the phone used to deposit can withdraw.</p>
+      <button id="doWithdraw" class="btn">Withdraw 💸 (request)</button>
+      <p class="small">Minimum withdrawal KES 200. Withdrawals are processed when admin approves.</p>
       <div id="withdrawMsg" class="small"></div>
     </div>
 
     <h3>Available Fridges 🧊</h3>
-    <div id="fridgelist" class="card"></div>
+    <div id="fridgelist" class="card">Loading fridges...</div>
 
     <p class="small">Logout: <a href="#" id="logout">click</a></p>
   </div>
@@ -58,10 +61,10 @@ const token = localStorage.getItem('bf_token');
 if (!token) location.href = 'login.html';
 
 async function api(path, method='GET', body) {
-  const headers = { 'Authorization': 'Bearer ' + token };
-  if (body) headers['content-type']='application/json';
-  const r = await fetch('/api/'+path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  return r.json();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch('/api/' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  return res.json();
 }
 
 async function load() {
@@ -73,71 +76,55 @@ async function load() {
     <div class="small">Balance: 💰 KES ${u.balance || 0}</div>
     <div class="small">Fridges owned: ${(u.fridges||[]).length}</div>`;
 
-  // referral card
-  const referralCard = document.getElementById('referralCard');
-  const referralLink = u.referralLink || `${location.origin}/register.html?ref=${u.referralCode}`;
-  referralCard.innerHTML = `
-    <div><b>Your referral link</b></div>
-    <div style="word-break:break-all; margin:6px 0">${referralLink}</div>
-    <button id="copyRef" class="btn copy">Copy referral link</button>
-    <div class="small">Referral earnings: KES ${u.referralEarned || 0} — Earn according to deposit tiers (min KES 500).</div>
-  `;
-  document.getElementById('copyRef').onclick = () => {
-    navigator.clipboard?.writeText(referralLink).then(()=> alert('Link copied to clipboard'));
-  };
+  // referral link (use email as id)
+  const refEl = document.getElementById('referralLink');
+  const refUrl = `${window.location.origin}/register.html?ref=${encodeURIComponent(u.email)}`;
+  refEl.innerHTML = `<input readonly value="${refUrl}" style="width:100%"/>`;
 
-  // fridges
-  const list = await api('fridges');
-  const container = document.getElementById('fridgelist');
-  container.innerHTML = '';
-  list.fridges.forEach(f=>{
-    const el = document.createElement('div');
-    el.className = 'fridge';
-    el.innerHTML = `<div style="display:flex;align-items:center">
-        <img src="images/fridge2ft.jpg" alt="${f.name}">
-        <div>
-          <b>${f.name}</b>
-          <div class="small">Price: 💰 KES ${f.price} — Earn: 💰 ${f.dailyEarn}/day</div>
-        </div>
+  const data = await api('fridges');
+  const list = document.getElementById('fridgelist');
+  list.innerHTML = '';
+  data.fridges.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'fridge';
+    div.innerHTML = `<div style="display:flex;align-items:center">
+        <img src="${f.img}" onerror="this.style.display='none'">
+        <div><b>${f.name}</b><div class="small">Price: KES ${f.price} — Earn: KES ${f.dailyEarn}/day</div></div>
       </div>
-      <div>
-        <button class="btn buy" data-id="${f.id}">Buy 💰 ${f.price}</button>
-      </div>`;
-    container.appendChild(el);
+      <div><button class="btn buy" data-id="${f.id}">Buy 💰 ${f.price}</button></div>`;
+    list.appendChild(div);
   });
 
-  document.querySelectorAll('.buy').forEach(b=>{
-    b.onclick = async (e) => {
-      const id = e.target.dataset.id;
-      const res = await api('buy','POST',{fridgeId: id});
-      if (res.error) alert(res.error); else { alert(res.message); load(); }
-    };
+  document.querySelectorAll('.buy').forEach(b => b.onclick = async (e) => {
+    const res = await api('buy', 'POST', { fridgeId: e.target.dataset.id });
+    if (res.error) alert(res.error); else { alert(res.message); load(); }
   });
 }
 
 document.getElementById('doDeposit').onclick = async () => {
-  const amount = Number(document.getElementById('depositAmount').value || 0);
   const phone = (document.getElementById('depositPhone').value || '').trim();
-  const msg = document.getElementById('depositMsg');
-  msg.innerText = '';
-  if (!amount || !phone) { msg.innerText = 'Enter amount and phone 💰'; return; }
-
-  // For demo: ask user for PIN prompt (simulated). In production you do STK push and no PIN entered in site.
-  const mpesaPin = prompt('Enter your M-PESA PIN (simulation):');
-  if (!mpesaPin) { msg.innerText = 'M-PESA PIN required'; return; }
-
-  const r = await api('deposit','POST',{ amount, phone, mpesaPin });
-  if (r.error) msg.innerText = r.error; else { msg.innerText = r.message + ' 💰'; load(); }
+  const amount = Number(document.getElementById('depositAmount').value || 0);
+  const msg = document.getElementById('depositMsg'); msg.innerText = 'Processing...';
+  if (!phone || !amount) { msg.innerText = 'Phone and amount required'; return; }
+  // For simulation you can prompt for pin (optional)
+  let mpesaPin = null;
+  if (!confirm('Using simulation? Click OK to use simulated M-PESA (requires PIN). Cancel to proceed without PIN.')) {
+    mpesaPin = '';
+  } else {
+    mpesaPin = prompt('Enter simulated M-PESA PIN (for testing):','1234');
+  }
+  const r = await api('deposit', 'POST', { phone, amount, mpesaPin });
+  if (r.error) msg.innerText = r.error;
+  else { msg.innerText = r.message; load(); }
 };
 
 document.getElementById('doWithdraw').onclick = async () => {
-  const amount = Number(document.getElementById('withdrawAmount').value || 0);
   const phone = (document.getElementById('withdrawPhone').value || '').trim();
-  const msg = document.getElementById('withdrawMsg');
-  msg.innerText = '';
-  if (!amount || !phone) { msg.innerText = 'Enter amount and phone 💸'; return; }
-  const r = await api('withdraw','POST',{ amount, phone });
-  if (r.error) msg.innerText = r.error; else { msg.innerText = r.message + ' 💸'; load(); }
+  const amount = Number(document.getElementById('withdrawAmount').value || 0);
+  const msg = document.getElementById('withdrawMsg'); msg.innerText = 'Processing...';
+  if (!phone || !amount) { msg.innerText = 'Phone and amount required'; return; }
+  const r = await api('withdraw','POST',{ phone, amount });
+  if (r.error) msg.innerText = r.error; else { msg.innerText = r.message; }
 };
 
 document.getElementById('logout').onclick = () => { localStorage.removeItem('bf_token'); location.href='login.html'; };
