@@ -1,1 +1,3 @@
 # add # at the beginning of lines ignoring images
+.env
+node_modules/
