@@ -1,43 +1,110 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Register - Bitfreeze</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="styles.css">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bitfreeze — Register</title>
+<style>
+  :root{
+    --bg:#0b0f14; --card:#0f1620; --muted:#9aa6b2; --accent:#ff8a00;
+    --glass: rgba(255,255,255,0.03);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#071018 0%, #08111a 100%);color:#e6eef6}
+  .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:40px}
+  .card{width:100%;max-width:420px;background:linear-gradient(180deg,var(--card),#0b1420);border-radius:12px;padding:28px;box-shadow:0 8px 30px rgba(2,8,15,0.7);border:1px solid rgba(255,255,255,0.03)}
+  .logo{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+  .logo .mark{width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#ffc063);display:flex;align-items:center;justify-content:center;font-weight:700;color:#111}
+  h1{margin:0;font-size:20px}
+  p.lead{margin:6px 0 18px;color:var(--muted);font-size:13px}
+  label{display:block;font-size:12px;color:var(--muted);margin-top:12px}
+  input{width:100%;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:var(--glass);color:inherit;outline:none;font-size:14px}
+  .btn{margin-top:18px;width:100%;padding:12px;border-radius:8px;border:0;background:linear-gradient(90deg,var(--accent),#ffb86b);color:#111;font-weight:700;cursor:pointer}
+  .muted{color:var(--muted);font-size:13px;margin-top:12px;text-align:center}
+  .row{display:flex;gap:8px}
+  .small{font-size:12px;color:var(--muted)}
+  .error{color:#ffb3b3;margin-top:10px;font-size:13px}
+  .success{color:#b8ffcf;margin-top:10px;font-size:13px}
+  footer{margin-top:14px;text-align:center;color:var(--muted);font-size:12px}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h2>Register</h2>
-    <div class="card form">
-      <input id="email" placeholder="Email (e.g. you@example.com)" />
-      <input id="phone" placeholder="Phone (07...)" />
-      <input id="password" type="password" placeholder="Password" />
-      <button id="doRegister">Register</button>
-      <p class="small">Already have an account? <a href="login.html">Login</a></p>
-      <div id="msg" class="small"></div>
+<div class="wrap">
+  <div class="card" role="main">
+    <div class="logo">
+      <div class="mark">BF</div>
+      <div>
+        <h1>Bitfreeze — Create account</h1>
+        <p class="lead">Start earning daily from fridges. Fast signup—we'll email you when admin approves deposits.</p>
+      </div>
     </div>
+
+    <form id="form">
+      <label for="name">Full name</label>
+      <input id="name" name="name" type="text" autocomplete="name" required />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" required />
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required />
+
+      <label for="ref">Referrer email (optional)</label>
+      <input id="ref" name="referrerEmail" type="email" placeholder="friend@example.com" />
+
+      <button class="btn" type="submit">Create account</button>
+
+      <div id="message" aria-live="polite"></div>
+
+      <div class="muted">Already have an account? <a href="/login.html" style="color:var(--accent);text-decoration:none">Sign in</a></div>
+    </form>
+
+    <footer>By signing up you agree to our terms. Enjoy secure earnings from your fridges.</footer>
   </div>
+</div>
 
 <script>
-document.getElementById('doRegister').onclick = async () => {
-  const email = (document.getElementById('email').value || '').trim();
-  const phone = (document.getElementById('phone').value || '').trim();
-  const password = (document.getElementById('password').value || '').trim();
+(async ()=> {
+  const form = document.getElementById('form');
+  const msg = document.getElementById('message');
 
-  // check referral param in URL
-  const url = new URL(window.location.href);
-  const ref = url.searchParams.get('ref');
+  function show(type, text){
+    msg.className = type === 'ok' ? 'success' : 'error';
+    msg.textContent = text;
+  }
 
-  const r = await fetch('/api/register', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ email, phone, password, ref })
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    show('', '');
+    const name = document.getElementById('name').value.trim();
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const referrerEmail = document.getElementById('ref').value.trim() || undefined;
+
+    if(!name||!email||!password){ show('err','Please fill name, email and password.'); return; }
+
+    try {
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password, referrerEmail })
+      });
+
+      const data = await res.json();
+      if(!res.ok) {
+        show('err', data.error || JSON.stringify(data));
+        return;
+      }
+
+      // success — store token and redirect to dashboard
+      if(data.token) localStorage.setItem('bf_token', data.token);
+      show('ok', 'Account created — redirecting to dashboard...');
+      setTimeout(()=> location.href = '/dashboard.html', 900);
+    } catch(err){
+      show('err','Network error: '+err.message);
+    }
   });
-  const j = await r.json();
-  if (j.error) document.getElementById('msg').innerText = j.error;
-  else { alert('Registered, please login'); location.href = 'login.html'; }
-};
+})();
 </script>
 </body>
 </html>

@@ -1,15 +1,56 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bitfreeze</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="styles.css">
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Arial', sans-serif;
+      background: #0b0f14;
+      color: #ffffff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    .container {
+      text-align: center;
+      background-color: #11151f;
+      padding: 50px 30px;
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.7);
+      max-width: 400px;
+      width: 90%;
+    }
+    h1 {
+      font-size: 36px;
+      margin-bottom: 25px;
+      background: linear-gradient(90deg, #f7931a, #ffb84d);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .links a {
+      display: inline-block;
+      margin: 12px 10px;
+      padding: 14px 28px;
+      font-weight: bold;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #111;
+      background: linear-gradient(90deg, #f7931a, #ffb84d);
+      transition: all 0.3s ease;
+    }
+    .links a:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 5px 15px rgba(255, 184, 77, 0.4);
+    }
+  </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="container">
     <h1>Bitfreeze</h1>
-    <p>Simple demo. Register & login to try dashboard.</p>
     <div class="links">
       <a href="register.html">Register</a>
       <a href="login.html">Login</a>
