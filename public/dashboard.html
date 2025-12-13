@@ -1,135 +1,238 @@
-<!doctype html>
-<html>
+k<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Dashboard - Bitfreeze</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="styles.css">
-  <style>
-    body { font-family: Arial, sans-serif; background: #0f1720; color: #fff; }
-    .wrap { padding: 20px; max-width: 900px; margin: auto; background: rgba(0,0,0,0.4); border-radius: 8px; }
-    .card { background: rgba(255,255,255,0.04); padding: 15px; margin: 10px 0; border-radius: 8px; }
-    .small { font-size: 0.9em; color: #ddd; }
-    .fridge { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.03); }
-    .fridge img { width: 100px; height: auto; margin-right: 10px; }
-    input, button { padding:8px; margin:6px 0; border-radius:6px; border:1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: #fff; width:100%; box-sizing:border-box; }
-    .form-row { display:flex; gap:8px; }
-    .form-row > * { flex:1; }
-    .btn { padding:8px 12px; border-radius:6px; background:#ffb000; color:#000; border:none; cursor:pointer; }
-    .referral { background: rgba(255,255,255,0.06); padding:10px; border-radius:6px; margin:10px 0; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bitfreeze — Dashboard</title>
+<style>
+:root{
+  --bg:#0b0f14;
+  --card:#0f1620;
+  --muted:#9aa6b2;
+  --accent:#ff8a00;
+  --glass:rgba(255,255,255,0.03);
+}
+html,body{
+  margin:0;padding:0;height:100%;font-family:Inter,system-ui,Arial;
+  background:radial-gradient(1200px 600px at top,#121a26,#070b11);
+  color:#e6eef6;
+}
+.wrap{padding:24px;max-width:1200px;margin:auto;}
+.card{background:linear-gradient(180deg,var(--card),#0b1420);border-radius:14px;padding:20px;margin-bottom:20px;border:1px solid rgba(255,255,255,0.05);}
+h2{margin-top:0;font-size:20px;color:#fff;}
+label{display:block;margin-top:10px;font-size:13px;color:var(--muted);}
+input,button{width:100%;padding:12px;margin-top:6px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);background:var(--glass);color:#fff;font-size:14px;outline:none;}
+button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-weight:700;cursor:pointer;}
+.error{color:#ff6b6b;margin-top:6px;font-size:13px;}
+.success{color:#9cffc4;margin-top:6px;font-size:13px;}
+.fridge-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;}
+.fridge{background:var(--glass);border-radius:10px;padding:10px;display:flex;flex-direction:column;align-items:center;text-align:center;}
+.fridge img{width:100%;height:150px;border-radius:8px;object-fit:cover;margin-bottom:8px;}
+.fridge-info strong{display:block;margin-bottom:4px;}
+@media(max-width:600px){.fridge img{height:120px;}}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h2>Your Dashboard</h2>
-    <div id="usercard" class="card">Loading...</div>
+<div class="wrap">
 
-    <div class="referral card">
-      <strong>Your Referral Link:</strong>
-      <div id="referralLink">Loading...</div>
-      <p class="small">Share this link. When a friend registers with it and deposits, you'll get rewards.</p>
-    </div>
-
-    <h3>Deposit 💰</h3>
-    <div class="card">
-      <div class="form-row">
-        <input id="depositPhone" placeholder="Your phone (07...)" />
-      </div>
-      <input id="depositAmount" placeholder="Amount KES e.g. 500" />
-      <button id="doDeposit" class="btn">Deposit 💰 (STK / Sim)</button>
-      <p class="small" id="depositNote">A payment prompt will be sent to your phone (if Daraja enabled). Otherwise local simulation is used.</p>
-      <div id="depositMsg" class="small"></div>
-    </div>
-
-    <h3>Withdraw 💸</h3>
-    <div class="card">
-      <input id="withdrawAmount" placeholder="Amount KES e.g. 500" />
-      <input id="withdrawPhone" placeholder="Phone used to deposit (07...)" />
-      <button id="doWithdraw" class="btn">Withdraw 💸 (request)</button>
-      <p class="small">Minimum withdrawal KES 200. Withdrawals are processed when admin approves.</p>
-      <div id="withdrawMsg" class="small"></div>
-    </div>
-
-    <h3>Available Fridges 🧊</h3>
-    <div id="fridgelist" class="card">Loading fridges...</div>
-
-    <p class="small">Logout: <a href="#" id="logout">click</a></p>
+  <div class="card" id="userinfo">
+    <h2>Your Account</h2>
+    <p>Email: <span id="userEmail"></span></p>
+    <p>Phone: <span id="userPhone"></span></p>
+    <p>Balance: KES <span id="userBalance">0</span></p>
+    <p>Fridges owned: <span id="userFridges">0</span></p>
+    <p>Referral Link: <a id="refLink" href="#" target="_blank"></a></p>
+    <button onclick="logout()">Logout</button>
   </div>
+
+  <div class="card">
+    <h2>Deposit Funds</h2>
+    <form id="depositForm">
+      <label for="depositPhone">Phone</label>
+      <input type="text" id="depositPhone" placeholder="0707xxxxxx" required>
+
+      <label for="depositAmount">Amount (KES)</label>
+      <input type="number" id="depositAmount" min="1" required>
+
+      <label for="depositCode">MPESA Transaction Code</label>
+      <input type="text" id="depositCode" placeholder="TLDON120DP" required>
+
+      <button type="submit">Submit Deposit</button>
+      <div id="depositMsg"></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Fridges Catalog</h2>
+    <div class="fridge-list" id="fridgeList"></div>
+  </div>
+
+  <div class="card">
+    <h2>Withdraw</h2>
+    <form id="withdrawForm">
+      <label for="withdrawPhone">Phone</label>
+      <input type="text" id="withdrawPhone" placeholder="0707xxxxxx" required>
+
+      <label for="withdrawAmount">Amount (KES, min 200)</label>
+      <input type="number" id="withdrawAmount" min="200" required>
+
+      <button type="submit">Request Withdraw</button>
+      <div id="withdrawMsg"></div>
+    </form>
+  </div>
+
+</div>
 
 <script>
 const token = localStorage.getItem('bf_token');
-if (!token) location.href = 'login.html';
+if(!token) location.href = '/login.html';
 
-async function api(path, method='GET', body) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
-  const res = await fetch('/api/' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  return res.json();
-}
-
-async function load() {
-  const me = await api('me');
-  if (me.error) { alert('Session expired'); localStorage.removeItem('bf_token'); location.href='login.html'; return; }
-  const u = me.user;
-  document.getElementById('usercard').innerHTML = `<b>${u.email}</b>
-    <div class="small">Phone: ${u.phone || '—'}</div>
-    <div class="small">Balance: 💰 KES ${u.balance || 0}</div>
-    <div class="small">Fridges owned: ${(u.fridges||[]).length}</div>`;
-
-  // referral link (use email as id)
-  const refEl = document.getElementById('referralLink');
-  const refUrl = `${window.location.origin}/register.html?ref=${encodeURIComponent(u.email)}`;
-  refEl.innerHTML = `<input readonly value="${refUrl}" style="width:100%"/>`;
-
-  const data = await api('fridges');
-  const list = document.getElementById('fridgelist');
-  list.innerHTML = '';
-  data.fridges.forEach(f => {
-    const div = document.createElement('div');
-    div.className = 'fridge';
-    div.innerHTML = `<div style="display:flex;align-items:center">
-        <img src="${f.img}" onerror="this.style.display='none'">
-        <div><b>${f.name}</b><div class="small">Price: KES ${f.price} — Earn: KES ${f.dailyEarn}/day</div></div>
-      </div>
-      <div><button class="btn buy" data-id="${f.id}">Buy 💰 ${f.price}</button></div>`;
-    list.appendChild(div);
-  });
-
-  document.querySelectorAll('.buy').forEach(b => b.onclick = async (e) => {
-    const res = await api('buy', 'POST', { fridgeId: e.target.dataset.id });
-    if (res.error) alert(res.error); else { alert(res.message); load(); }
-  });
-}
-
-document.getElementById('doDeposit').onclick = async () => {
-  const phone = (document.getElementById('depositPhone').value || '').trim();
-  const amount = Number(document.getElementById('depositAmount').value || 0);
-  const msg = document.getElementById('depositMsg'); msg.innerText = 'Processing...';
-  if (!phone || !amount) { msg.innerText = 'Phone and amount required'; return; }
-  // For simulation you can prompt for pin (optional)
-  let mpesaPin = null;
-  if (!confirm('Using simulation? Click OK to use simulated M-PESA (requires PIN). Cancel to proceed without PIN.')) {
-    mpesaPin = '';
+async function getUser() {
+  const res = await fetch('/api/me', { headers:{'Authorization':'Bearer '+token}});
+  const data = await res.json();
+  if(data.user){
+    document.getElementById('userEmail').textContent = data.user.email;
+    document.getElementById('userPhone').textContent = data.user.phone || '—';
+    document.getElementById('userBalance').textContent = data.user.balance;
+    document.getElementById('userFridges').textContent = data.user.fridges.length;
+    const ref = encodeURIComponent(data.user.email);
+    document.getElementById('refLink').textContent = window.location.origin+'/register.html?ref='+ref;
+    document.getElementById('refLink').href = window.location.origin+'/register.html?ref='+ref;
   } else {
-    mpesaPin = prompt('Enter simulated M-PESA PIN (for testing):','1234');
+    logout();
   }
-  const r = await api('deposit', 'POST', { phone, amount, mpesaPin });
-  if (r.error) msg.innerText = r.error;
-  else { msg.innerText = r.message; load(); }
-};
+}
+getUser();
 
-document.getElementById('doWithdraw').onclick = async () => {
-  const phone = (document.getElementById('withdrawPhone').value || '').trim();
-  const amount = Number(document.getElementById('withdrawAmount').value || 0);
-  const msg = document.getElementById('withdrawMsg'); msg.innerText = 'Processing...';
-  if (!phone || !amount) { msg.innerText = 'Phone and amount required'; return; }
-  const r = await api('withdraw','POST',{ phone, amount });
-  if (r.error) msg.innerText = r.error; else { msg.innerText = r.message; }
-};
+function logout(){
+  localStorage.removeItem('bf_token');
+  location.href = '/login.html';
+}
 
-document.getElementById('logout').onclick = () => { localStorage.removeItem('bf_token'); location.href='login.html'; };
+// Deposit
+document.getElementById('depositForm').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const phone = document.getElementById('depositPhone').value.trim();
+  const amount = Number(document.getElementById('depositAmount').value.trim());
+  const code = document.getElementById('depositCode').value.trim();
+  const msgEl = document.getElementById('depositMsg');
+  msgEl.textContent = '';
+  msgEl.className='';
 
-load();
+  if(!phone || !amount || !code){
+    msgEl.textContent = 'Phone, amount, and MPESA code required';
+    msgEl.className = 'error';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/deposit', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify({phone, amount, mpesaCode: code})
+    });
+    const data = await res.json();
+    if(res.ok){
+      msgEl.textContent = 'Deposit submitted. You will receive approval via email.';
+      msgEl.className='success';
+    } else {
+      msgEl.textContent = data.error || 'Deposit failed';
+      msgEl.className='error';
+    }
+  } catch(err){
+    msgEl.textContent = 'Network error: '+err.message;
+    msgEl.className='error';
+  }
+});
+
+// Withdraw
+document.getElementById('withdrawForm').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const phone = document.getElementById('withdrawPhone').value.trim();
+  const amount = Number(document.getElementById('withdrawAmount').value.trim());
+  const msgEl = document.getElementById('withdrawMsg');
+  msgEl.textContent = '';
+  msgEl.className='';
+
+  if(!phone || !amount){
+    msgEl.textContent = 'Phone and amount required';
+    msgEl.className='error';
+    return;
+  }
+
+  if(amount < 200){
+    msgEl.textContent = 'Minimum withdrawal is KES 200';
+    msgEl.className='error';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/withdraw', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify({phone, amount})
+    });
+    const data = await res.json();
+    if(res.ok){
+      msgEl.textContent = data.message;
+      msgEl.className='success';
+    } else {
+      msgEl.textContent = data.error || 'Withdraw failed';
+      msgEl.className='error';
+    }
+  } catch(err){
+    msgEl.textContent = 'Network error: '+err.message;
+    msgEl.className='error';
+  }
+});
+
+// Fridges
+async function loadFridges(){
+  const res = await fetch('/api/fridges', { headers:{'Authorization':'Bearer '+token}});
+  const data = await res.json();
+  const list = document.getElementById('fridgeList');
+  list.innerHTML='';
+  if(data.fridges){
+    data.fridges.forEach(f=>{
+      const div = document.createElement('div');
+      div.className='fridge';
+      div.innerHTML = `
+        <img src="${f.img}" alt="${f.name}">
+        <div class="fridge-info">
+          <strong>${f.name}</strong>
+          <p>Price: KES ${f.price}</p>
+          <p>Daily Earn: KES ${f.dailyEarn}</p>
+          <button onclick="confirmBuy('${f.id}','${f.name}',${f.price})">Buy</button>
+        </div>
+      `;
+      list.appendChild(div);
+    });
+  }
+}
+loadFridges();
+
+function confirmBuy(id,name,price){
+  if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){
+    buyFridge(id);
+  }
+}
+
+async function buyFridge(id){
+  try{
+    const res = await fetch('/api/buy', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify({fridgeId: id})
+    });
+    const data = await res.json();
+    if(res.ok){
+      alert(data.message + '. New Balance: KES '+data.balance);
+      getUser();
+    } else alert(data.error || 'Purchase failed');
+  } catch(err){
+    alert('Network error: '+err.message);
+  }
+}
 </script>
 </body>
 </html>
