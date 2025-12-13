@@ -92,9 +92,8 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
 const token = localStorage.getItem('bf_token');
 if(!token) location.href = '/login.html';
 
-// Get user
-async function getUser(){
-  const res = await fetch('/api/me',{headers:{'Authorization':'Bearer '+token}});
+async function getUser() {
+  const res = await fetch('/api/me', { headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   if(data.user){
     document.getElementById('userEmail').textContent = data.user.email;
@@ -108,7 +107,10 @@ async function getUser(){
 }
 getUser();
 
-function logout(){ localStorage.removeItem('bf_token'); location.href='/login.html'; }
+function logout(){
+  localStorage.removeItem('bf_token');
+  location.href = '/login.html';
+}
 
 // Deposit
 document.getElementById('depositForm').addEventListener('submit', async e=>{
@@ -117,17 +119,33 @@ document.getElementById('depositForm').addEventListener('submit', async e=>{
   const amount = Number(document.getElementById('depositAmount').value.trim());
   const code = document.getElementById('depositCode').value.trim();
   const msgEl = document.getElementById('depositMsg');
-  msgEl.textContent=''; msgEl.className='';
-  if(!phone || !amount || !code){ msgEl.textContent='Phone, amount, and MPESA code required'; msgEl.className='error'; return; }
-  try{
-    const res = await fetch('/api/deposit',{
+  msgEl.textContent = '';
+  msgEl.className='';
+
+  if(!phone || !amount || !code){
+    msgEl.textContent = 'Phone, amount, and MPESA code required';
+    msgEl.className = 'error';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/deposit', {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({phone,amount,mpesaCode:code})
+      body: JSON.stringify({phone, amount, mpesaCode: code})
     });
     const data = await res.json();
-    msgEl.textContent = data.message || data.error; msgEl.className = res.ok?'success':'error';
-  } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
+    if(res.ok){
+      msgEl.textContent = 'Deposit submitted. You will receive approval via email.';
+      msgEl.className='success';
+    } else {
+      msgEl.textContent = data.error || 'Deposit failed';
+      msgEl.className='error';
+    }
+  } catch(err){
+    msgEl.textContent = 'Network error: '+err.message;
+    msgEl.className='error';
+  }
 });
 
 // Withdraw
@@ -136,23 +154,44 @@ document.getElementById('withdrawForm').addEventListener('submit', async e=>{
   const phone = document.getElementById('withdrawPhone').value.trim();
   const amount = Number(document.getElementById('withdrawAmount').value.trim());
   const msgEl = document.getElementById('withdrawMsg');
-  msgEl.textContent=''; msgEl.className='';
-  if(!phone || !amount){ msgEl.textContent='Phone and amount required'; msgEl.className='error'; return; }
-  if(amount<200){ msgEl.textContent='Minimum withdrawal is KES 200'; msgEl.className='error'; return; }
-  try{
-    const res = await fetch('/api/withdraw',{
+  msgEl.textContent = '';
+  msgEl.className='';
+
+  if(!phone || !amount){
+    msgEl.textContent = 'Phone and amount required';
+    msgEl.className='error';
+    return;
+  }
+
+  if(amount < 200){
+    msgEl.textContent = 'Minimum withdrawal is KES 200';
+    msgEl.className='error';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/withdraw', {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({phone,amount})
+      body: JSON.stringify({phone, amount})
     });
     const data = await res.json();
-    msgEl.textContent = data.message || data.error; msgEl.className = res.ok?'success':'error';
-  } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
+    if(res.ok){
+      msgEl.textContent = data.message;
+      msgEl.className='success';
+    } else {
+      msgEl.textContent = data.error || 'Withdraw failed';
+      msgEl.className='error';
+    }
+  } catch(err){
+    msgEl.textContent = 'Network error: '+err.message;
+    msgEl.className='error';
+  }
 });
 
-// Load fridges
+// Fridges
 async function loadFridges(){
-  const res = await fetch('/api/fridges',{headers:{'Authorization':'Bearer '+token}});
+  const res = await fetch('/api/fridges', { headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   const list = document.getElementById('fridgeList');
   list.innerHTML='';
@@ -175,19 +214,27 @@ async function loadFridges(){
 }
 loadFridges();
 
-// Buy fridge
-function confirmBuy(id,name,price){ if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){ buyFridge(id); } }
+function confirmBuy(id,name,price){
+  if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){
+    buyFridge(id);
+  }
+}
+
 async function buyFridge(id){
   try{
-    const res = await fetch('/api/buy',{
+    const res = await fetch('/api/buy', {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({fridgeId:id})
+      body: JSON.stringify({fridgeId: id})
     });
     const data = await res.json();
-    if(res.ok){ alert(data.message + '. New Balance: KES '+data.balance); getUser(); }
-    else alert(data.error || 'Purchase failed');
-  } catch(err){ alert('Network error: '+err.message); }
+    if(res.ok){
+      alert(data.message + '. New Balance: KES '+data.balance);
+      getUser();
+    } else alert(data.error || 'Purchase failed');
+  } catch(err){
+    alert('Network error: '+err.message);
+  }
 }
 </script>
 </body>

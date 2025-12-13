@@ -43,8 +43,8 @@ app.use(express.static(path.join(__dirname, 'public')));
   await storage.init({ dir: path.join(__dirname, 'persist') });
 
   if (!await storage.getItem('users')) await storage.setItem('users', []);
-  if (!await storage.getItem('deposits')) await storage.setItem('deposits', []); // array of deposit requests
-  if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []); // array of withdrawal requests
+  if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
+  if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
 
   console.log('Storage initialized.');
 })();
@@ -80,13 +80,6 @@ function auth(req, res, next) {
   } catch (e) {
     return res.status(401).json({ error: 'Invalid token' });
   }
-}
-
-// Admin middleware
-function adminAuth(req, res, next) {
-  const tok = req.headers['x-admin-token'] || '';
-  if (!tok || tok !== ADMIN_PASS) return res.status(401).json({ error: 'Admin auth required' });
-  next();
 }
 
 // Nodemailer transporter helpers
@@ -148,7 +141,7 @@ app.get('/api/me', auth, async (req, res) => {
   res.json({ user: { email: user.email, phone: user.phone, balance: user.balance || 0, fridges: user.fridges || [], referrals: user.referrals || [] } });
 });
 
-// Manual Deposit
+// Deposit
 app.post('/api/deposit', auth, async (req, res) => {
   const { amount, mpesaCode, phone } = req.body || {};
   if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
@@ -156,24 +149,17 @@ app.post('/api/deposit', auth, async (req, res) => {
   const user = await getUserByEmail(req.user.email);
   if (!user) return res.status(400).json({ error: 'User not found' });
 
-  // Record deposit request
   const deposits = await storage.getItem('deposits') || [];
-  const depositRequest = {
-    id: crypto.randomUUID(),
-    email: user.email,
-    phone,
-    amount,
-    mpesaCode,
-    status: 'PENDING',
-    requestedAt: Date.now()
-  };
+  const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  // Send email to admin for approval
+  // Dynamic domain
+  const baseURL = req.headers.host.startsWith('localhost') ? `http://${req.headers.host}` : `https://${req.headers.host}`;
+  const approveLink = `${baseURL}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
+  const rejectLink = `${baseURL}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
+
   const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
-  const approveLink = `${process.env.DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
-  const rejectLink = `${process.env.DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
   await transporter.sendMail({
     from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
     to: DEPOSIT_EMAIL,
@@ -195,7 +181,7 @@ app.post('/api/deposit', auth, async (req, res) => {
   res.json({ message: 'Deposit submitted. Await admin approval.' });
 });
 
-// Manual Withdraw
+// Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
@@ -204,12 +190,10 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const user = await getUserByEmail(req.user.email);
   if (!user) return res.status(400).json({ error: 'User not found' });
 
-  // Check if user has approved deposit
   const deposits = await storage.getItem('deposits') || [];
   const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
   if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
 
-  // Withdraw only from the deposit phone
   if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
   if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
@@ -218,10 +202,11 @@ app.post('/api/withdraw', auth, async (req, res) => {
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  // Send email to admin
+  const baseURL = req.headers.host.startsWith('localhost') ? `http://${req.headers.host}` : `https://${req.headers.host}`;
+  const approveLink = `${baseURL}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
+  const rejectLink = `${baseURL}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
+
   const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
-  const approveLink = `${process.env.DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
-  const rejectLink = `${process.env.DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
   await transporter.sendMail({
     from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
     to: WITHDRAW_EMAIL,
