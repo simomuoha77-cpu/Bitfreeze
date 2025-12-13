@@ -1,0 +1,16 @@
+[
+  {
+    "id": "f1",
+    "name": "CoolFridge 200L",
+    "price": 5000,
+    "dailyEarn": 50,
+    "img": "https://i.imgur.com/1.jpg"
+  },
+  {
+    "id": "f2",
+    "name": "IceMaster 300L",
+    "price": 8000,
+    "dailyEarn": 80,
+    "img": "https://i.imgur.com/2.jpg"
+  }
+]

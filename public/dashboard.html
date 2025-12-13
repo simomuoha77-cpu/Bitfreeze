@@ -1,4 +1,4 @@
-k<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -35,6 +35,7 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
 <body>
 <div class="wrap">
 
+  <!-- User Info -->
   <div class="card" id="userinfo">
     <h2>Your Account</h2>
     <p>Email: <span id="userEmail"></span></p>
@@ -45,8 +46,10 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
     <button onclick="logout()">Logout</button>
   </div>
 
+  <!-- Deposit Form -->
   <div class="card">
     <h2>Deposit Funds</h2>
+    <p>Send MPESA to Till: <strong>6992349</strong></p>
     <form id="depositForm">
       <label for="depositPhone">Phone</label>
       <input type="text" id="depositPhone" placeholder="0707xxxxxx" required>
@@ -62,11 +65,13 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
     </form>
   </div>
 
+  <!-- Fridges -->
   <div class="card">
     <h2>Fridges Catalog</h2>
     <div class="fridge-list" id="fridgeList"></div>
   </div>
 
+  <!-- Withdraw -->
   <div class="card">
     <h2>Withdraw</h2>
     <form id="withdrawForm">
@@ -87,8 +92,9 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
 const token = localStorage.getItem('bf_token');
 if(!token) location.href = '/login.html';
 
-async function getUser() {
-  const res = await fetch('/api/me', { headers:{'Authorization':'Bearer '+token}});
+// Get user
+async function getUser(){
+  const res = await fetch('/api/me',{headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   if(data.user){
     document.getElementById('userEmail').textContent = data.user.email;
@@ -98,16 +104,11 @@ async function getUser() {
     const ref = encodeURIComponent(data.user.email);
     document.getElementById('refLink').textContent = window.location.origin+'/register.html?ref='+ref;
     document.getElementById('refLink').href = window.location.origin+'/register.html?ref='+ref;
-  } else {
-    logout();
-  }
+  } else logout();
 }
 getUser();
 
-function logout(){
-  localStorage.removeItem('bf_token');
-  location.href = '/login.html';
-}
+function logout(){ localStorage.removeItem('bf_token'); location.href='/login.html'; }
 
 // Deposit
 document.getElementById('depositForm').addEventListener('submit', async e=>{
@@ -116,33 +117,17 @@ document.getElementById('depositForm').addEventListener('submit', async e=>{
   const amount = Number(document.getElementById('depositAmount').value.trim());
   const code = document.getElementById('depositCode').value.trim();
   const msgEl = document.getElementById('depositMsg');
-  msgEl.textContent = '';
-  msgEl.className='';
-
-  if(!phone || !amount || !code){
-    msgEl.textContent = 'Phone, amount, and MPESA code required';
-    msgEl.className = 'error';
-    return;
-  }
-
-  try {
-    const res = await fetch('/api/deposit', {
+  msgEl.textContent=''; msgEl.className='';
+  if(!phone || !amount || !code){ msgEl.textContent='Phone, amount, and MPESA code required'; msgEl.className='error'; return; }
+  try{
+    const res = await fetch('/api/deposit',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body: JSON.stringify({phone, amount, mpesaCode: code})
+      body:JSON.stringify({phone,amount,mpesaCode:code})
     });
     const data = await res.json();
-    if(res.ok){
-      msgEl.textContent = 'Deposit submitted. You will receive approval via email.';
-      msgEl.className='success';
-    } else {
-      msgEl.textContent = data.error || 'Deposit failed';
-      msgEl.className='error';
-    }
-  } catch(err){
-    msgEl.textContent = 'Network error: '+err.message;
-    msgEl.className='error';
-  }
+    msgEl.textContent = data.message || data.error; msgEl.className = res.ok?'success':'error';
+  } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
 });
 
 // Withdraw
@@ -151,44 +136,23 @@ document.getElementById('withdrawForm').addEventListener('submit', async e=>{
   const phone = document.getElementById('withdrawPhone').value.trim();
   const amount = Number(document.getElementById('withdrawAmount').value.trim());
   const msgEl = document.getElementById('withdrawMsg');
-  msgEl.textContent = '';
-  msgEl.className='';
-
-  if(!phone || !amount){
-    msgEl.textContent = 'Phone and amount required';
-    msgEl.className='error';
-    return;
-  }
-
-  if(amount < 200){
-    msgEl.textContent = 'Minimum withdrawal is KES 200';
-    msgEl.className='error';
-    return;
-  }
-
-  try {
-    const res = await fetch('/api/withdraw', {
+  msgEl.textContent=''; msgEl.className='';
+  if(!phone || !amount){ msgEl.textContent='Phone and amount required'; msgEl.className='error'; return; }
+  if(amount<200){ msgEl.textContent='Minimum withdrawal is KES 200'; msgEl.className='error'; return; }
+  try{
+    const res = await fetch('/api/withdraw',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body: JSON.stringify({phone, amount})
+      body:JSON.stringify({phone,amount})
     });
     const data = await res.json();
-    if(res.ok){
-      msgEl.textContent = data.message;
-      msgEl.className='success';
-    } else {
-      msgEl.textContent = data.error || 'Withdraw failed';
-      msgEl.className='error';
-    }
-  } catch(err){
-    msgEl.textContent = 'Network error: '+err.message;
-    msgEl.className='error';
-  }
+    msgEl.textContent = data.message || data.error; msgEl.className = res.ok?'success':'error';
+  } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
 });
 
-// Fridges
+// Load fridges
 async function loadFridges(){
-  const res = await fetch('/api/fridges', { headers:{'Authorization':'Bearer '+token}});
+  const res = await fetch('/api/fridges',{headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   const list = document.getElementById('fridgeList');
   list.innerHTML='';
@@ -211,27 +175,19 @@ async function loadFridges(){
 }
 loadFridges();
 
-function confirmBuy(id,name,price){
-  if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){
-    buyFridge(id);
-  }
-}
-
+// Buy fridge
+function confirmBuy(id,name,price){ if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){ buyFridge(id); } }
 async function buyFridge(id){
   try{
-    const res = await fetch('/api/buy', {
+    const res = await fetch('/api/buy',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body: JSON.stringify({fridgeId: id})
+      body:JSON.stringify({fridgeId:id})
     });
     const data = await res.json();
-    if(res.ok){
-      alert(data.message + '. New Balance: KES '+data.balance);
-      getUser();
-    } else alert(data.error || 'Purchase failed');
-  } catch(err){
-    alert('Network error: '+err.message);
-  }
+    if(res.ok){ alert(data.message + '. New Balance: KES '+data.balance); getUser(); }
+    else alert(data.error || 'Purchase failed');
+  } catch(err){ alert('Network error: '+err.message); }
 }
 </script>
 </body>
