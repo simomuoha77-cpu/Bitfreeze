@@ -1,34 +1,35 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Bitfreeze — Dashboard</title>
 <style>
-:root{
-  --bg:#0b0f14;
-  --card:#0f1620;
-  --muted:#9aa6b2;
-  --accent:#ff8a00;
-  --glass:rgba(255,255,255,0.03);
+:root {
+  --bg: #0b0f14;
+  --card: #0f1620;
+  --muted: #9aa6b2;
+  --accent: #ff8a00;
+  --glass: rgba(255,255,255,0.03);
 }
-html,body{
-  margin:0;padding:0;height:100%;font-family:Inter,system-ui,Arial;
-  background:radial-gradient(1200px 600px at top,#121a26,#070b11);
-  color:#e6eef6;
+body {
+  margin: 0;
+  font-family: Inter, system-ui, Arial;
+  background: radial-gradient(1200px 600px at top,#121a26,#070b11);
+  color: #e6eef6;
 }
-.wrap{padding:24px;max-width:1200px;margin:auto;}
-.card{background:linear-gradient(180deg,var(--card),#0b1420);border-radius:14px;padding:20px;margin-bottom:20px;border:1px solid rgba(255,255,255,0.05);}
-h2{margin-top:0;font-size:20px;color:#fff;}
-label{display:block;margin-top:10px;font-size:13px;color:var(--muted);}
-input,button{width:100%;padding:12px;margin-top:6px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);background:var(--glass);color:#fff;font-size:14px;outline:none;}
-button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-weight:700;cursor:pointer;}
-.error{color:#ff6b6b;margin-top:6px;font-size:13px;}
-.success{color:#9cffc4;margin-top:6px;font-size:13px;}
-.fridge-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;}
-.fridge{background:var(--glass);border-radius:10px;padding:10px;display:flex;flex-direction:column;align-items:center;text-align:center;}
-.fridge img{width:100%;height:150px;border-radius:8px;object-fit:cover;margin-bottom:8px;}
-.fridge-info strong{display:block;margin-bottom:4px;}
+.wrap { max-width: 1200px; margin: auto; padding: 24px; }
+.card { background: linear-gradient(180deg,var(--card),#0b1420); border-radius: 14px; padding: 20px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.05); }
+h2 { margin-top: 0; color: #fff; }
+label { display:block; margin-top:10px; font-size:13px; color: var(--muted); }
+input, button { width: 100%; padding:12px; margin-top:6px; border-radius:8px; border:1px solid rgba(255,255,255,0.05); background: var(--glass); color:#fff; font-size:14px; outline:none; }
+button { background: linear-gradient(90deg,var(--accent),#ffb347); color:#111; font-weight:700; cursor:pointer; }
+.error { color:#ff6b6b; margin-top:6px; font-size:13px; }
+.success { color:#9cffc4; margin-top:6px; font-size:13px; }
+.fridge-list { display:grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap:12px; }
+.fridge { background: var(--glass); border-radius:10px; padding:10px; display:flex; flex-direction:column; align-items:center; text-align:center; }
+.fridge img { width:100%; height:150px; border-radius:8px; object-fit:cover; margin-bottom:8px; }
+.fridge-info strong { display:block; margin-bottom:4px; }
 @media(max-width:600px){.fridge img{height:120px;}}
 </style>
 </head>
@@ -49,17 +50,14 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
   <!-- Deposit Form -->
   <div class="card">
     <h2>Deposit Funds</h2>
-    <p>Send MPESA to Till: <strong>6992349</strong></p>
+    <p>Send MPESA to Till: <strong id="mpesaTill">6992349</strong></p>
     <form id="depositForm">
       <label for="depositPhone">Phone</label>
       <input type="text" id="depositPhone" placeholder="0707xxxxxx" required>
-
       <label for="depositAmount">Amount (KES)</label>
       <input type="number" id="depositAmount" min="1" required>
-
       <label for="depositCode">MPESA Transaction Code</label>
       <input type="text" id="depositCode" placeholder="TLDON120DP" required>
-
       <button type="submit">Submit Deposit</button>
       <div id="depositMsg"></div>
     </form>
@@ -77,10 +75,8 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
     <form id="withdrawForm">
       <label for="withdrawPhone">Phone</label>
       <input type="text" id="withdrawPhone" placeholder="0707xxxxxx" required>
-
       <label for="withdrawAmount">Amount (KES, min 200)</label>
       <input type="number" id="withdrawAmount" min="200" required>
-
       <button type="submit">Request Withdraw</button>
       <div id="withdrawMsg"></div>
     </form>
@@ -89,12 +85,12 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
 </div>
 
 <script>
-const API_BASE = 'https://bitfreeze-production.up.railway.app'; // your domain
+const DOMAIN = 'https://bitfreeze-production.up.railway.app';
 const token = localStorage.getItem('bf_token');
 if(!token) location.href = '/login.html';
 
 async function getUser() {
-  const res = await fetch(`${API_BASE}/api/me`, { headers:{'Authorization':'Bearer '+token}});
+  const res = await fetch(DOMAIN+'/api/me',{ headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   if(data.user){
     document.getElementById('userEmail').textContent = data.user.email;
@@ -102,18 +98,13 @@ async function getUser() {
     document.getElementById('userBalance').textContent = data.user.balance;
     document.getElementById('userFridges').textContent = data.user.fridges.length;
     const ref = encodeURIComponent(data.user.email);
-    document.getElementById('refLink').textContent = `${API_BASE}/register.html?ref=${ref}`;
-    document.getElementById('refLink').href = `${API_BASE}/register.html?ref=${ref}`;
-  } else {
-    logout();
-  }
+    document.getElementById('refLink').textContent = DOMAIN+'/register.html?ref='+ref;
+    document.getElementById('refLink').href = DOMAIN+'/register.html?ref='+ref;
+  } else logout();
 }
 getUser();
 
-function logout(){
-  localStorage.removeItem('bf_token');
-  location.href = '/login.html';
-}
+function logout(){ localStorage.removeItem('bf_token'); location.href='/login.html'; }
 
 // Deposit
 document.getElementById('depositForm').addEventListener('submit', async e=>{
@@ -122,33 +113,17 @@ document.getElementById('depositForm').addEventListener('submit', async e=>{
   const amount = Number(document.getElementById('depositAmount').value.trim());
   const code = document.getElementById('depositCode').value.trim();
   const msgEl = document.getElementById('depositMsg');
-  msgEl.textContent = '';
-  msgEl.className='';
-
-  if(!phone || !amount || !code){
-    msgEl.textContent = 'Phone, amount, and MPESA code required';
-    msgEl.className = 'error';
-    return;
-  }
-
+  msgEl.textContent=''; msgEl.className='';
   try {
-    const res = await fetch(`${API_BASE}/api/deposit`, {
+    const res = await fetch(DOMAIN+'/api/deposit', {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
       body: JSON.stringify({phone, amount, mpesaCode: code})
     });
     const data = await res.json();
-    if(res.ok){
-      msgEl.textContent = 'Deposit submitted. You will receive approval via email.';
-      msgEl.className='success';
-    } else {
-      msgEl.textContent = data.error || 'Deposit failed';
-      msgEl.className='error';
-    }
-  } catch(err){
-    msgEl.textContent = 'Network error: '+err.message;
-    msgEl.className='error';
-  }
+    if(res.ok){ msgEl.textContent=data.message; msgEl.className='success'; }
+    else { msgEl.textContent=data.error||'Deposit failed'; msgEl.className='error'; }
+  } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
 });
 
 // Withdraw
@@ -157,53 +132,30 @@ document.getElementById('withdrawForm').addEventListener('submit', async e=>{
   const phone = document.getElementById('withdrawPhone').value.trim();
   const amount = Number(document.getElementById('withdrawAmount').value.trim());
   const msgEl = document.getElementById('withdrawMsg');
-  msgEl.textContent = '';
-  msgEl.className='';
-
-  if(!phone || !amount){
-    msgEl.textContent = 'Phone and amount required';
-    msgEl.className='error';
-    return;
-  }
-
-  if(amount < 200){
-    msgEl.textContent = 'Minimum withdrawal is KES 200';
-    msgEl.className='error';
-    return;
-  }
-
+  msgEl.textContent=''; msgEl.className='';
   try {
-    const res = await fetch(`${API_BASE}/api/withdraw`, {
+    const res = await fetch(DOMAIN+'/api/withdraw',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
       body: JSON.stringify({phone, amount})
     });
     const data = await res.json();
-    if(res.ok){
-      msgEl.textContent = data.message;
-      msgEl.className='success';
-    } else {
-      msgEl.textContent = data.error || 'Withdraw failed';
-      msgEl.className='error';
-    }
-  } catch(err){
-    msgEl.textContent = 'Network error: '+err.message;
-    msgEl.className='error';
-  }
+    if(res.ok){ msgEl.textContent=data.message; msgEl.className='success'; }
+    else { msgEl.textContent=data.error||'Withdraw failed'; msgEl.className='error'; }
+  } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
 });
 
-// Fridges
+// Load fridges
 async function loadFridges(){
-  const res = await fetch(`${API_BASE}/api/fridges`, { headers:{'Authorization':'Bearer '+token}});
+  const res = await fetch(DOMAIN+'/api/fridges',{ headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
-  const list = document.getElementById('fridgeList');
-  list.innerHTML='';
+  const list = document.getElementById('fridgeList'); list.innerHTML='';
   if(data.fridges){
     data.fridges.forEach(f=>{
-      const div = document.createElement('div');
+      const div=document.createElement('div');
       div.className='fridge';
-      div.innerHTML = `
-        <img src="${API_BASE}/${f.img}" alt="${f.name}">
+      div.innerHTML=`
+        <img src="${DOMAIN}/${f.img}" alt="${f.name}">
         <div class="fridge-info">
           <strong>${f.name}</strong>
           <p>Price: KES ${f.price}</p>
@@ -217,27 +169,19 @@ async function loadFridges(){
 }
 loadFridges();
 
-function confirmBuy(id,name,price){
-  if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){
-    buyFridge(id);
-  }
-}
+function confirmBuy(id,name,price){ if(confirm(`Confirm purchase of ${name} for KES ${price}?`)){ buyFridge(id); } }
 
 async function buyFridge(id){
   try{
-    const res = await fetch(`${API_BASE}/api/buy`, {
+    const res = await fetch(DOMAIN+'/api/buy',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body: JSON.stringify({fridgeId: id})
+      body: JSON.stringify({fridgeId:id})
     });
     const data = await res.json();
-    if(res.ok){
-      alert(data.message + '. New Balance: KES '+data.balance);
-      getUser();
-    } else alert(data.error || 'Purchase failed');
-  } catch(err){
-    alert('Network error: '+err.message);
-  }
+    if(res.ok){ alert(data.message+'. New Balance: KES '+data.balance); getUser(); }
+    else alert(data.error||'Purchase failed');
+  } catch(err){ alert('Network error: '+err.message); }
 }
 </script>
 </body>

@@ -11,17 +11,19 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'http://localhost:3000';
-const MPESA_TILL = process.env.MPESA_TILL || '6992349';
 
 // Emails
 const DEPOSIT_EMAIL = process.env.DEPOSIT_EMAIL;
 const DEPOSIT_EMAIL_PASS = process.env.DEPOSIT_EMAIL_PASS;
 const WITHDRAW_EMAIL = process.env.WITHDRAW_EMAIL;
 const WITHDRAW_EMAIL_PASS = process.env.WITHDRAW_EMAIL_PASS;
+
+// MPESA Manual
+const MPESA_TILL = process.env.MPESA_TILL || '6992349';
 
 // Fridges catalog
 const FRIDGES = [
@@ -33,20 +35,22 @@ const FRIDGES = [
   { id: '12ft', name: '12 ft Fridge', price: 8000, dailyEarn: 350, img: 'images/fridge12ft.jpg' },
 ];
 
-app.use(cors());
 app.use(bodyParser.json());
+app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize storage
 (async () => {
   await storage.init({ dir: path.join(__dirname, 'persist') });
+
   if (!await storage.getItem('users')) await storage.setItem('users', []);
   if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
   if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
+
   console.log('Storage initialized.');
 })();
 
-// Helper functions
+// Helpers
 async function findUser(emailOrPhone) {
   const users = await storage.getItem('users') || [];
   return users.find(u => u.email === emailOrPhone || u.phone === emailOrPhone);
@@ -74,7 +78,7 @@ function auth(req, res, next) {
     const p = jwt.verify(token, SECRET);
     req.user = p;
     next();
-  } catch (e) {
+  } catch {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
@@ -86,41 +90,26 @@ function adminAuth(req, res, next) {
   next();
 }
 
-// Nodemailer transporter
+// Nodemailer
 function createTransporter(email, pass) {
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: email, pass: pass }
-  });
+  return nodemailer.createTransport({ service: 'gmail', auth: { user: email, pass: pass } });
 }
 
-// ================= API =================
+// ========== API ==========
 
 // Register
 app.post('/api/register', async (req, res) => {
-  const { email, password, phone, ref } = req.body;
+  const { email, password, phone, ref } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-
   const users = await storage.getItem('users');
   if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
 
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const newUser = {
-    id: crypto.randomUUID(),
-    email,
-    password: hashedPassword,
-    phone: phone || null,
-    balance: 0,
-    fridges: [],
-    referrals: [],
-    createdAt: Date.now()
-  };
-
+  const hashed = await bcrypt.hash(password, 10);
+  const newUser = { email, password: hashed, phone: phone || null, balance: 0, fridges: [], referrals: [], createdAt: Date.now() };
   await saveUser(newUser);
 
-  // Handle referral
   if (ref) {
-    const inviter = users.find(u => u.email === ref);
+    const inviter = await getUserByEmail(String(ref));
     if (inviter) {
       inviter.referrals.push({ email, createdAt: Date.now() });
       await saveUser(inviter);
@@ -132,12 +121,10 @@ app.post('/api/register', async (req, res) => {
 
 // Login
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-
   const user = await findUser(email);
   if (!user) return res.status(400).json({ error: 'Invalid credentials' });
-
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
 
@@ -145,40 +132,30 @@ app.post('/api/login', async (req, res) => {
   res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
 });
 
-// Get profile
+// Fridges
+app.get('/api/fridges', (req, res) => res.json({ fridges: FRIDGES }));
+
+// Profile
 app.get('/api/me', auth, async (req, res) => {
   const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user) return res.status(400).json({ error: 'User not found' });
   res.json({ user: { email: user.email, phone: user.phone, balance: user.balance, fridges: user.fridges, referrals: user.referrals } });
 });
 
-// Get fridges
-app.get('/api/fridges', (req, res) => {
-  res.json({ fridges: FRIDGES });
-});
-
-// Submit deposit
+// Deposit
 app.post('/api/deposit', auth, async (req, res) => {
   const { amount, mpesaCode, phone } = req.body;
   if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
 
   const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user) return res.status(400).json({ error: 'User not found' });
 
   const deposits = await storage.getItem('deposits') || [];
-  const depositRequest = {
-    id: crypto.randomUUID(),
-    email: user.email,
-    phone,
-    amount,
-    mpesaCode,
-    status: 'PENDING',
-    requestedAt: Date.now()
-  };
+  const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  // Send email
+  // Send admin email
   const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
   const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
   const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
@@ -191,32 +168,27 @@ app.post('/api/deposit', auth, async (req, res) => {
       <p>Email: ${user.email}</p>
       <p>Phone: ${phone}</p>
       <p>Amount: KES ${amount}</p>
-      <p>MPESA Code: ${mpesaCode}</p>
       <p>Status: PENDING</p>
-      <p>
-        <a href="${approveLink}">Approve</a> |
-        <a href="${rejectLink}">Reject</a>
-      </p>
+      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
     `
   });
 
   res.json({ message: 'Deposit submitted. Await admin approval.' });
 });
 
-// Submit withdraw
+// Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body;
   if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
   if (amount < 200) return res.status(400).json({ error: 'Minimum withdrawal is KES 200' });
 
   const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user) return res.status(400).json({ error: 'User not found' });
 
   const deposits = await storage.getItem('deposits') || [];
   const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
   if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
-
-  if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from deposit phone' });
+  if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
   if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
   const withdrawals = await storage.getItem('withdrawals') || [];
@@ -237,10 +209,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
       <p>Phone: ${phone}</p>
       <p>Amount: KES ${amount}</p>
       <p>Status: PENDING</p>
-      <p>
-        <a href="${approveLink}">Approve</a> |
-        <a href="${rejectLink}">Reject</a>
-      </p>
+      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
     `
   });
 
@@ -321,5 +290,6 @@ app.post('/api/buy', auth, async (req, res) => {
 // Status
 app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL }));
 
+// Start server
 app.listen(PORT, () => console.log(`Bitfreeze server running on port ${PORT}`));
 
