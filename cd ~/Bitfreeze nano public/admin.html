@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Bitfreeze Admin Panel</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f9; padding: 20px; }
+    .container { max-width: 800px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    th, td { padding: 8px; border: 1px solid #ddd; text-align: left; }
+    th { background: #007BFF; color: #fff; }
+    button { padding: 6px 10px; border: none; border-radius: 4px; cursor: pointer; }
+    .approve { background: #28a745; color: #fff; }
+    .reject { background: #dc3545; color: #fff; }
+    input { width: 100%; padding: 8px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; }
+    .message { padding: 10px; margin: 10px 0; border-radius: 4px; }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Bitfreeze Admin Panel</h2>
+
+    <div id="auth-section">
+      <input type="password" id="admin-pass" placeholder="Enter Admin Password" />
+      <button onclick="adminLogin()">Login as Admin</button>
+    </div>
+
+    <div id="admin-section" style="display:none;">
+      <h3>Deposit Requests</h3>
+      <table id="deposit-table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Phone</th>
+            <th>Amount</th>
+            <th>MPESA Code</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <h3>Withdrawal Requests</h3>
+      <table id="withdrawal-table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Phone</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="message"></div>
+  </div>
+
+  <script>
+    const API = 'https://bitfreeze-production.up.railway.app/api';
+    let adminToken = '';
+
+    function showMessage(msg, type='success') {
+      const el = document.getElementById('message');
+      el.innerHTML = msg;
+      el.className = 'message ' + type;
+      setTimeout(() => { el.innerHTML=''; el.className=''; }, 4000);
+    }
+
+    function adminLogin() {
+      const pass = document.getElementById('admin-pass').value;
+      if(!pass) return showMessage('Enter admin password', 'error');
+      adminToken = pass;
+      document.getElementById('auth-section').style.display = 'none';
+      document.getElementById('admin-section').style.display = 'block';
+      loadDeposits();
+      loadWithdrawals();
+    }
+
+    async function loadDeposits() {
+      try {
+        const res = await fetch(`${API}/deposits`); // You may need to create an endpoint /deposits for admin
+        const data = await res.json();
+        const tbody = document.querySelector('#deposit-table tbody');
+        tbody.innerHTML = '';
+        data.forEach(d => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${d.email}</td>
+            <td>${d.phone}</td>
+            <td>${d.amount}</td>
+            <td>${d.mpesaCode || '-'}</td>
+            <td>${d.status}</td>
+            <td>
+              <button class="approve" onclick="approveDeposit('${d.id}')">Approve</button>
+              <button class="reject" onclick="rejectDeposit('${d.id}')">Reject</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+      } catch(err) {
+        showMessage('Failed to load deposits', 'error');
+      }
+    }
+
+    async function approveDeposit(id) { await processDeposit(id, 'approve'); }
+    async function rejectDeposit(id) { await processDeposit(id, 'reject'); }
+
+    async function processDeposit(id, action) {
+      try {
+        const res = await fetch(`${API}/admin/deposits/${id}/${action}?token=${adminToken}`);
+        const text = await res.text();
+        showMessage(text);
+        loadDeposits();
+      } catch(err) {
+        showMessage('Action failed', 'error');
+      }
+    }
+
+    async function loadWithdrawals() {
+      try {
+        const res = await fetch(`${API}/withdrawals`); // You may need to create endpoint /withdrawals for admin
+        const data = await res.json();
+        const tbody = document.querySelector('#withdrawal-table tbody');
+        tbody.innerHTML = '';
+        data.forEach(w => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${w.email}</td>
+            <td>${w.phone}</td>
+            <td>${w.amount}</td>
+            <td>${w.status}</td>
+            <td>
+              <button class="approve" onclick="approveWithdraw('${w.id}')">Approve</button>
+              <button class="reject" onclick="rejectWithdraw('${w.id}')">Reject</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+      } catch(err) {
+        showMessage('Failed to load withdrawals', 'error');
+      }
+    }
+
+    async function approveWithdraw(id) { await processWithdraw(id, 'approve'); }
+    async function rejectWithdraw(id) { await processWithdraw(id, 'reject'); }
+
+    async function processWithdraw(id, action) {
+      try {
+        const res = await fetch(`${API}/admin/withdrawals/${id}/${action}?token=${adminToken}`);
+        const text = await res.text();
+        showMessage(text);
+        loadWithdrawals();
+      } catch(err) {
+        showMessage('Action failed', 'error');
+      }
+    }
+  </script>
+</body>
+</html>
