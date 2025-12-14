@@ -89,11 +89,12 @@ button{background:linear-gradient(90deg,var(--accent),#ffb347);color:#111;font-w
 </div>
 
 <script>
+const API_BASE = 'https://bitfreeze-production.up.railway.app'; // your domain
 const token = localStorage.getItem('bf_token');
 if(!token) location.href = '/login.html';
 
 async function getUser() {
-  const res = await fetch('/api/me', { headers:{'Authorization':'Bearer '+token}});
+  const res = await fetch(`${API_BASE}/api/me`, { headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   if(data.user){
     document.getElementById('userEmail').textContent = data.user.email;
@@ -101,9 +102,11 @@ async function getUser() {
     document.getElementById('userBalance').textContent = data.user.balance;
     document.getElementById('userFridges').textContent = data.user.fridges.length;
     const ref = encodeURIComponent(data.user.email);
-    document.getElementById('refLink').textContent = window.location.origin+'/register.html?ref='+ref;
-    document.getElementById('refLink').href = window.location.origin+'/register.html?ref='+ref;
-  } else logout();
+    document.getElementById('refLink').textContent = `${API_BASE}/register.html?ref=${ref}`;
+    document.getElementById('refLink').href = `${API_BASE}/register.html?ref=${ref}`;
+  } else {
+    logout();
+  }
 }
 getUser();
 
@@ -129,7 +132,7 @@ document.getElementById('depositForm').addEventListener('submit', async e=>{
   }
 
   try {
-    const res = await fetch('/api/deposit', {
+    const res = await fetch(`${API_BASE}/api/deposit`, {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
       body: JSON.stringify({phone, amount, mpesaCode: code})
@@ -170,7 +173,7 @@ document.getElementById('withdrawForm').addEventListener('submit', async e=>{
   }
 
   try {
-    const res = await fetch('/api/withdraw', {
+    const res = await fetch(`${API_BASE}/api/withdraw`, {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
       body: JSON.stringify({phone, amount})
@@ -191,7 +194,7 @@ document.getElementById('withdrawForm').addEventListener('submit', async e=>{
 
 // Fridges
 async function loadFridges(){
-  const res = await fetch('/api/fridges', { headers:{'Authorization':'Bearer '+token}});
+  const res = await fetch(`${API_BASE}/api/fridges`, { headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
   const list = document.getElementById('fridgeList');
   list.innerHTML='';
@@ -200,7 +203,7 @@ async function loadFridges(){
       const div = document.createElement('div');
       div.className='fridge';
       div.innerHTML = `
-        <img src="${f.img}" alt="${f.name}">
+        <img src="${API_BASE}/${f.img}" alt="${f.name}">
         <div class="fridge-info">
           <strong>${f.name}</strong>
           <p>Price: KES ${f.price}</p>
@@ -222,7 +225,7 @@ function confirmBuy(id,name,price){
 
 async function buyFridge(id){
   try{
-    const res = await fetch('/api/buy', {
+    const res = await fetch(`${API_BASE}/api/buy`, {
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
       body: JSON.stringify({fridgeId: id})
