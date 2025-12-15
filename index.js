@@ -13,7 +13,7 @@ const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
-const DOMAIN = process.env.DOMAIN || 'http://localhost:3000';
+const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 
 // Telegram bots
