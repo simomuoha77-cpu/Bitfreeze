@@ -8,14 +8,15 @@ const cors = require('cors');
 const storage = require('node-persist');
 const path = require('path');
 const crypto = require('crypto');
-const fetch = require('node-fetch');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
-// Telegram Bot
+// Telegram
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -81,18 +82,11 @@ function auth(req, res, next) {
   }
 }
 
-// Telegram notification
-async function notifyTelegram(message) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message })
-    });
-  } catch (err) {
-    console.error('Telegram error:', err);
-  }
+// Admin middleware
+function adminAuth(req, res, next) {
+  const tok = req.headers['x-admin-token'] || '';
+  if (!tok || tok !== ADMIN_PASS) return res.status(401).json({ error: 'Admin auth required' });
+  next();
 }
 
 // ========== API ==========
@@ -155,11 +149,19 @@ app.post('/api/deposit', auth, async (req, res) => {
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  // Notify admin via Telegram
-  const message = `💰 New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: ${mpesaCode}\nID: ${depositRequest.id}\nStatus: PENDING\nReply with /approve_${depositRequest.id} or /reject_${depositRequest.id}`;
-  await notifyTelegram(message);
-
   res.json({ message: 'Deposit submitted. Await admin approval.' });
+
+  // Telegram notification
+  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: `🟢 New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nDeposit ID: ${depositRequest.id}\nStatus: PENDING`
+      });
+    } catch (err) {
+      console.error('Telegram deposit error:', err.message);
+    }
+  }
 });
 
 // Withdraw
@@ -182,68 +184,71 @@ app.post('/api/withdraw', auth, async (req, res) => {
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  // Notify admin via Telegram
-  const message = `💸 New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nID: ${request.id}\nStatus: PENDING\nReply with /approvew_${request.id} or /rejectw_${request.id}`;
-  await notifyTelegram(message);
-
   res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+
+  // Telegram notification
+  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: `🟡 New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nWithdrawal ID: ${request.id}\nStatus: PENDING`
+      });
+    } catch (err) {
+      console.error('Telegram withdrawal error:', err.message);
+    }
+  }
 });
 
-// Telegram webhook
-app.post('/telegram', async (req, res) => {
-  const update = req.body;
-  if (!update.message || !update.message.text) return res.sendStatus(200);
+// Admin approve/reject deposit
+app.get('/api/admin/deposits/:id/:action', async (req, res) => {
+  const { id, action } = req.params;
+  const token = req.query.token;
+  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
 
-  const text = update.message.text.trim();
-  const chatId = update.message.chat.id;
+  const deposits = await storage.getItem('deposits') || [];
+  const d = deposits.find(x => x.id === id);
+  if (!d) return res.status(404).send('Deposit not found');
+  if (d.status !== 'PENDING') return res.status(400).send('Deposit already processed');
 
-  // Deposit approve/reject
-  if (text.startsWith('/approve_') || text.startsWith('/reject_')) {
-    const action = text.startsWith('/approve_') ? 'APPROVED' : 'REJECTED';
-    const id = text.split('_')[1];
-    const deposits = await storage.getItem('deposits') || [];
-    const d = deposits.find(x => x.id === id);
-    if (d && d.status === 'PENDING') {
-      d.status = action;
-      d.processedAt = Date.now();
-      await storage.setItem('deposits', deposits);
+  d.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+  d.processedAt = Date.now();
+  await storage.setItem('deposits', deposits);
 
-      if (action === 'APPROVED') {
-        const user = await getUserByEmail(d.email);
-        if (user) {
-          user.balance += Number(d.amount);
-          await saveUser(user);
-        }
-      }
-
-      await notifyTelegram(`Deposit ${action}: ${d.email} | KES ${d.amount}`);
+  if (d.status === 'APPROVED') {
+    const user = await getUserByEmail(d.email);
+    if (user) {
+      user.balance += Number(d.amount);
+      await saveUser(user);
     }
   }
 
-  // Withdraw approve/reject
-  if (text.startsWith('/approvew_') || text.startsWith('/rejectw_')) {
-    const action = text.startsWith('/approvew_') ? 'APPROVED' : 'REJECTED';
-    const id = text.split('_')[1];
-    const withdrawals = await storage.getItem('withdrawals') || [];
-    const w = withdrawals.find(x => x.id === id);
-    if (w && w.status === 'PENDING') {
-      w.status = action;
-      w.processedAt = Date.now();
-      await storage.setItem('withdrawals', withdrawals);
+  res.send(`Deposit ${d.status}`);
+});
 
-      if (action === 'APPROVED') {
-        const user = await getUserByEmail(w.email);
-        if (user) {
-          user.balance -= Number(w.amount);
-          await saveUser(user);
-        }
-      }
+// Admin approve/reject withdrawal
+app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
+  const { id, action } = req.params;
+  const token = req.query.token;
+  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
 
-      await notifyTelegram(`Withdrawal ${action}: ${w.email} | KES ${w.amount}`);
+  const withdrawals = await storage.getItem('withdrawals') || [];
+  const w = withdrawals.find(x => x.id === id);
+  if (!w) return res.status(404).send('Withdrawal not found');
+  if (w.status !== 'PENDING') return res.status(400).send('Withdrawal already processed');
+
+  w.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+  w.processedAt = Date.now();
+  await storage.setItem('withdrawals', withdrawals);
+
+  if (w.status === 'APPROVED') {
+    const user = await getUserByEmail(w.email);
+    if (user) {
+      user.balance -= Number(w.amount);
+      await saveUser(user);
     }
   }
 
-  res.sendStatus(200);
+  res.send(`Withdrawal ${w.status}`);
 });
 
 // Buy fridge
