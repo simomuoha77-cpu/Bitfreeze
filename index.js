@@ -16,15 +16,15 @@ const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
-// Telegram
+// Telegram Bot
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// MPESA Manual
+// MPESA
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
 const MPESA_NAME = process.env.MPESA_NAME || 'Bitfreeze';
 
-// Fridges catalog
+// Fridges
 const FRIDGES = [
   { id: '2ft', name: '2 ft Fridge', price: 500, dailyEarn: 25, img: 'images/fridge2ft.jpg' },
   { id: '4ft', name: '4 ft Fridge', price: 1000, dailyEarn: 55, img: 'images/fridge4ft.jpg' },
@@ -38,15 +38,19 @@ app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize storage
+// Initialize storage with error handling
 (async () => {
-  await storage.init({ dir: path.join(__dirname, 'persist') });
+  try {
+    await storage.init({ dir: path.join(__dirname, 'persist'), forgiveParseErrors: true });
 
-  if (!await storage.getItem('users')) await storage.setItem('users', []);
-  if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
-  if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
+    if (!await storage.getItem('users')) await storage.setItem('users', []);
+    if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
+    if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
 
-  console.log('Storage initialized.');
+    console.log('Storage initialized.');
+  } catch (err) {
+    console.error('Storage init error:', err);
+  }
 })();
 
 // Helpers
@@ -74,8 +78,7 @@ function auth(req, res, next) {
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
   const token = a.slice(7);
   try {
-    const p = jwt.verify(token, SECRET);
-    req.user = p;
+    req.user = jwt.verify(token, SECRET);
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
@@ -89,17 +92,17 @@ function adminAuth(req, res, next) {
   next();
 }
 
-// Telegram notifier
+// Send Telegram message
 async function sendTelegramMessage(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
   try {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
-      text: text,
+      text,
       parse_mode: 'HTML'
     });
   } catch (err) {
-    console.error('Telegram error:', err.message);
+    console.error('Telegram send error:', err.message);
   }
 }
 
@@ -107,37 +110,50 @@ async function sendTelegramMessage(text) {
 
 // Register
 app.post('/api/register', async (req, res) => {
-  const { email, password, phone, ref } = req.body || {};
-  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-  const users = await storage.getItem('users');
-  if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
+  try {
+    const { email, password, phone, ref } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-  const hashed = await bcrypt.hash(password, 10);
-  const newUser = { email, password: hashed, phone: phone || null, balance: 0, fridges: [], referrals: [], createdAt: Date.now() };
-  await saveUser(newUser);
+    const users = await storage.getItem('users') || [];
+    if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
 
-  if (ref) {
-    const inviter = await getUserByEmail(String(ref));
-    if (inviter) {
-      inviter.referrals.push({ email, createdAt: Date.now() });
-      await saveUser(inviter);
+    const hashed = await bcrypt.hash(password, 10);
+    const newUser = { email, password: hashed, phone: phone || null, balance: 0, fridges: [], referrals: [], createdAt: Date.now() };
+    await saveUser(newUser);
+
+    if (ref) {
+      const inviter = await getUserByEmail(String(ref));
+      if (inviter) {
+        inviter.referrals.push({ email, createdAt: Date.now() });
+        await saveUser(inviter);
+      }
     }
-  }
 
-  res.json({ message: 'Registered', email });
+    res.json({ message: 'Registered', email });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Login
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-  const user = await findUser(email);
-  if (!user) return res.status(400).json({ error: 'Invalid credentials' });
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-  const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
+    const user = await findUser(email);
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
+    res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Fridges
@@ -152,120 +168,163 @@ app.get('/api/me', auth, async (req, res) => {
 
 // Deposit
 app.post('/api/deposit', auth, async (req, res) => {
-  const { amount, mpesaCode, phone } = req.body;
-  if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
+  try {
+    const { amount, mpesaCode, phone } = req.body;
+    if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
 
-  const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(400).json({ error: 'User not found' });
+    const user = await getUserByEmail(req.user.email);
+    if (!user) return res.status(400).json({ error: 'User not found' });
 
-  const deposits = await storage.getItem('deposits') || [];
-  const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
-  deposits.push(depositRequest);
-  await storage.setItem('deposits', deposits);
+    const deposits = await storage.getItem('deposits') || [];
+    const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
+    deposits.push(depositRequest);
+    await storage.setItem('deposits', deposits);
 
-  res.json({ message: 'Deposit submitted. Await admin approval.' });
+    // Telegram notification
+    const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
+    const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
+    await sendTelegramMessage(`
+New Deposit Request
+Email: ${user.email}
+Phone: ${phone}
+Amount: KES ${amount}
+Status: PENDING
+Approve: ${approveLink}
+Reject: ${rejectLink}
+    `);
 
-  // Send Telegram message
-  const text = `💰 New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nApprove: ${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}\nReject: ${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
-  await sendTelegramMessage(text);
+    res.json({ message: 'Deposit submitted. Await admin approval.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
-  const { amount, phone } = req.body;
-  if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
-  if (amount < 200) return res.status(400).json({ error: 'Minimum withdrawal is KES 200' });
+  try {
+    const { amount, phone } = req.body;
+    if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
+    if (amount < 200) return res.status(400).json({ error: 'Minimum withdrawal is KES 200' });
 
-  const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(400).json({ error: 'User not found' });
+    const user = await getUserByEmail(req.user.email);
+    if (!user) return res.status(400).json({ error: 'User not found' });
 
-  const deposits = await storage.getItem('deposits') || [];
-  const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
-  if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
-  if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
-  if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
+    const deposits = await storage.getItem('deposits') || [];
+    const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
+    if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
+    if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
+    if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
-  const withdrawals = await storage.getItem('withdrawals') || [];
-  const request = { id: crypto.randomUUID(), email: user.email, phone, amount, status: 'PENDING', requestedAt: Date.now() };
-  withdrawals.push(request);
-  await storage.setItem('withdrawals', withdrawals);
+    const withdrawals = await storage.getItem('withdrawals') || [];
+    const request = { id: crypto.randomUUID(), email: user.email, phone, amount, status: 'PENDING', requestedAt: Date.now() };
+    withdrawals.push(request);
+    await storage.setItem('withdrawals', withdrawals);
 
-  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+    // Telegram notification
+    const approveLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
+    const rejectLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
+    await sendTelegramMessage(`
+New Withdrawal Request
+Email: ${user.email}
+Phone: ${phone}
+Amount: KES ${amount}
+Status: PENDING
+Approve: ${approveLink}
+Reject: ${rejectLink}
+    `);
 
-  // Send Telegram message
-  const text = `💸 New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nApprove: ${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}\nReject: ${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
-  await sendTelegramMessage(text);
+    res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Admin approve/reject deposit
 app.get('/api/admin/deposits/:id/:action', async (req, res) => {
-  const { id, action } = req.params;
-  const token = req.query.token;
-  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
+  try {
+    const { id, action } = req.params;
+    const token = req.query.token;
+    if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
 
-  const deposits = await storage.getItem('deposits') || [];
-  const d = deposits.find(x => x.id === id);
-  if (!d) return res.status(404).send('Deposit not found');
-  if (d.status !== 'PENDING') return res.status(400).send('Deposit already processed');
+    const deposits = await storage.getItem('deposits') || [];
+    const d = deposits.find(x => x.id === id);
+    if (!d) return res.status(404).send('Deposit not found');
+    if (d.status !== 'PENDING') return res.status(400).send('Deposit already processed');
 
-  d.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
-  d.processedAt = Date.now();
-  await storage.setItem('deposits', deposits);
+    d.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+    d.processedAt = Date.now();
+    await storage.setItem('deposits', deposits);
 
-  if (d.status === 'APPROVED') {
-    const user = await getUserByEmail(d.email);
-    if (user) {
-      user.balance += Number(d.amount);
-      await saveUser(user);
+    if (d.status === 'APPROVED') {
+      const user = await getUserByEmail(d.email);
+      if (user) {
+        user.balance += Number(d.amount);
+        await saveUser(user);
+      }
     }
-  }
 
-  res.send(`Deposit ${d.status}`);
+    res.send(`Deposit ${d.status}`);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Server error');
+  }
 });
 
 // Admin approve/reject withdrawal
 app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
-  const { id, action } = req.params;
-  const token = req.query.token;
-  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
+  try {
+    const { id, action } = req.params;
+    const token = req.query.token;
+    if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
 
-  const withdrawals = await storage.getItem('withdrawals') || [];
-  const w = withdrawals.find(x => x.id === id);
-  if (!w) return res.status(404).send('Withdrawal not found');
-  if (w.status !== 'PENDING') return res.status(400).send('Withdrawal already processed');
+    const withdrawals = await storage.getItem('withdrawals') || [];
+    const w = withdrawals.find(x => x.id === id);
+    if (!w) return res.status(404).send('Withdrawal not found');
+    if (w.status !== 'PENDING') return res.status(400).send('Withdrawal already processed');
 
-  w.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
-  w.processedAt = Date.now();
-  await storage.setItem('withdrawals', withdrawals);
+    w.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+    w.processedAt = Date.now();
+    await storage.setItem('withdrawals', withdrawals);
 
-  if (w.status === 'APPROVED') {
-    const user = await getUserByEmail(w.email);
-    if (user) {
-      user.balance -= Number(w.amount);
-      await saveUser(user);
+    if (w.status === 'APPROVED') {
+      const user = await getUserByEmail(w.email);
+      if (user) {
+        user.balance -= Number(w.amount);
+        await saveUser(user);
+      }
     }
-  }
 
-  res.send(`Withdrawal ${w.status}`);
+    res.send(`Withdrawal ${w.status}`);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Server error');
+  }
 });
 
 // Buy fridge
 app.post('/api/buy', auth, async (req, res) => {
-  const { fridgeId } = req.body;
-  if (!fridgeId) return res.status(400).json({ error: 'fridgeId required' });
+  try {
+    const { fridgeId } = req.body;
+    if (!fridgeId) return res.status(400).json({ error: 'fridgeId required' });
 
-  const item = FRIDGES.find(f => f.id === fridgeId);
-  if (!item) return res.status(400).json({ error: 'Invalid fridge' });
+    const item = FRIDGES.find(f => f.id === fridgeId);
+    if (!item) return res.status(400).json({ error: 'Invalid fridge' });
 
-  const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(400).json({ error: 'User not found' });
-  if (user.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
+    const user = await getUserByEmail(req.user.email);
+    if (!user) return res.status(400).json({ error: 'User not found' });
+    if (user.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
 
-  user.balance -= item.price;
-  user.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
-  await saveUser(user);
+    user.balance -= item.price;
+    user.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
+    await saveUser(user);
 
-  res.json({ message: 'Bought ' + item.name, balance: user.balance });
+    res.json({ message: 'Bought ' + item.name, balance: user.balance });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Status
