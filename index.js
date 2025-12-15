@@ -7,21 +7,19 @@ const cors = require('cors');
 const storage = require('node-persist');
 const path = require('path');
 const crypto = require('crypto');
-const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
-const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
+const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
-// Telegram bots
-const TG_DEPOSIT_BOT = process.env.TELEGRAM_BOT_TOKEN;
-const TG_DEPOSIT_CHAT = process.env.TELEGRAM_CHAT_ID;
-const TG_WITHDRAW_BOT = process.env.TELEGRAM_WITHDRAW_BOT;
-const TG_WITHDRAW_CHAT = process.env.TELEGRAM_WITHDRAW_CHAT;
+// Telegram Bot
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// MPESA
+// MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
 const MPESA_NAME = process.env.MPESA_NAME || 'Bitfreeze';
 
@@ -41,151 +39,270 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize storage
 (async () => {
-  await storage.init({ dir: path.join(__dirname, 'persist'), forgiveParseErrors: true });
+  await storage.init({ dir: path.join(__dirname, 'persist') });
   if (!await storage.getItem('users')) await storage.setItem('users', []);
   if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
   if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
   console.log('Storage initialized.');
 })();
 
-// Helpers
-async function getUsers(){ return (await storage.getItem('users')) || []; }
-async function saveUsers(u){ await storage.setItem('users', u); }
-async function findUser(email){ return (await getUsers()).find(x=>x.email===email); }
-async function saveUser(user){ const u=await getUsers(); const i=u.findIndex(x=>x.email===user.email); if(i>-1) u[i]=user; else u.push(user); await saveUsers(u); }
-
-function auth(req,res,next){ 
-  const a=req.headers.authorization; 
-  if(!a||!a.startsWith('Bearer ')) return res.status(401).json({error:'Unauthorized'}); 
-  try{ req.user=jwt.verify(a.slice(7),SECRET); next(); }catch{ return res.status(401).json({error:'Invalid token'});} 
+// Helper functions
+async function findUser(emailOrPhone) {
+  const users = await storage.getItem('users') || [];
+  return users.find(u => u.email === emailOrPhone || u.phone === emailOrPhone);
 }
 
-// Telegram helper
-async function tgSend(bot, chat, text, buttons){
-  if(!bot||!chat) return;
-  const body = { chat_id: chat, text, parse_mode:'HTML' };
-  if(buttons){ body.reply_markup = { inline_keyboard: buttons }; }
-  await fetch(`https://api.telegram.org/bot${bot}/sendMessage`,{
-    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
-  }).catch(e=>console.error('TG send error',e));
+async function getUserByEmail(email) {
+  const users = await storage.getItem('users') || [];
+  return users.find(u => u.email === email);
+}
+
+async function saveUser(user) {
+  const users = await storage.getItem('users') || [];
+  const idx = users.findIndex(u => u.email === user.email);
+  if (idx > -1) users[idx] = user;
+  else users.push(user);
+  await storage.setItem('users', users);
+}
+
+// Auth middleware
+function auth(req, res, next) {
+  const a = req.headers.authorization;
+  if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
+  const token = a.slice(7);
+  try {
+    const p = jwt.verify(token, SECRET);
+    req.user = p;
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+// Admin middleware
+function adminAuth(req, res, next) {
+  const tok = req.headers['x-admin-token'] || '';
+  if (!tok || tok !== ADMIN_PASS) return res.status(401).json({ error: 'Admin auth required' });
+  next();
 }
 
 // ========== API ==========
 
 // Register
-app.post('/api/register', async (req,res)=>{
-  const { email,password,phone,ref } = req.body||{};
-  if(!email||!password) return res.status(400).json({error:'Email & password required'});
-  const users = await getUsers();
-  if(users.find(u=>u.email===email)) return res.status(400).json({error:'User exists'});
-  const hashed = await bcrypt.hash(password,10);
-  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now() };
-  users.push(user); await saveUsers(users);
-  if(ref){ const inv=users.find(u=>u.email===String(ref)); if(inv){ inv.referrals.push({email,createdAt:Date.now()}); await saveUsers(users); } }
-  res.json({message:'Registered'});
+app.post('/api/register', async (req, res) => {
+  const { email, password, phone, ref } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+  const users = await storage.getItem('users');
+  if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
+
+  const hashed = await bcrypt.hash(password, 10);
+  const newUser = { email, password: hashed, phone: phone || null, balance: 0, fridges: [], referrals: [], createdAt: Date.now() };
+  await saveUser(newUser);
+
+  if (ref) {
+    const inviter = await getUserByEmail(String(ref));
+    if (inviter) {
+      inviter.referrals.push({ email, createdAt: Date.now() });
+      await saveUser(inviter);
+    }
+  }
+
+  res.json({ message: 'Registered', email });
 });
 
 // Login
-app.post('/api/login', async (req,res)=>{
-  const { email, password } = req.body||{};
-  const user = await findUser(email); if(!user) return res.status(400).json({error:'Invalid'});
-  const ok = await bcrypt.compare(password,user.password); if(!ok) return res.status(400).json({error:'Invalid'});
-  const token = jwt.sign({email:user.email}, SECRET, {expiresIn:'7d'});
-  res.json({ token, email:user.email, phone:user.phone, balance:user.balance });
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+  const user = await findUser(email);
+  if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
+  const ok = await bcrypt.compare(password, user.password);
+  if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+
+  const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
+  res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
 });
 
 // Fridges
-app.get('/api/fridges',(req,res)=>res.json({fridges:FRIDGES}));
+app.get('/api/fridges', (req, res) => res.json({ fridges: FRIDGES }));
 
 // Profile
-app.get('/api/me', auth, async (req,res)=>{
-  const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'Not found'});
-  res.json({ user:{ email:u.email, phone:u.phone, balance:u.balance, fridges:u.fridges, referrals:u.referrals } });
+app.get('/api/me', auth, async (req, res) => {
+  const user = await getUserByEmail(req.user.email);
+  if (!user) return res.status(400).json({ error: 'User not found' });
+  res.json({ user: { email: user.email, phone: user.phone, balance: user.balance, fridges: user.fridges, referrals: user.referrals } });
 });
 
 // Deposit
-app.post('/api/deposit', auth, async (req,res)=>{
-  const { amount, mpesaCode, phone } = req.body||{};
-  if(!amount||!mpesaCode||!phone) return res.status(400).json({error:'amount, mpesaCode, phone required'});
-  const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
-  const deposits = (await storage.getItem('deposits'))||[];
-  const d = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), mpesaCode, status:'PENDING', requestedAt:Date.now() };
-  deposits.push(d); await storage.setItem('deposits',deposits);
-  res.json({message:'Deposit submitted'});
+app.post('/api/deposit', auth, async (req, res) => {
+  const { amount, mpesaCode, phone } = req.body;
+  if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
 
-  const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${d.id}\nStatus: PENDING`;
-  const buttons = [[
-    { text:'✅ Approve', callback_data:`dep_approve_${d.id}` },
-    { text:'❌ Reject', callback_data:`dep_reject_${d.id}` }
-  ]];
-  await tgSend(TG_DEPOSIT_BOT, TG_DEPOSIT_CHAT, text, buttons);
+  const user = await getUserByEmail(req.user.email);
+  if (!user) return res.status(400).json({ error: 'User not found' });
+
+  const deposits = await storage.getItem('deposits') || [];
+  const depositRequest = {
+    id: crypto.randomUUID(),
+    email: user.email,
+    phone,
+    amount,
+    mpesaCode,
+    status: 'PENDING',
+    requestedAt: Date.now()
+  };
+  deposits.push(depositRequest);
+  await storage.setItem('deposits', deposits);
+
+  res.json({ message: 'Deposit submitted. Await admin approval.' });
+
+  // Telegram notification
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: `🟢 New Deposit Request
+Email: ${user.email}
+Phone: ${phone}
+Amount: KES ${amount}
+Deposit ID: ${depositRequest.id}
+MPESA Code: ${mpesaCode}
+Status: PENDING`,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Approve ✅", url: `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}` },
+            { text: "Reject ❌", url: `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}` }
+          ]
+        ]
+      }
+    });
+  } catch (err) {
+    console.error('Telegram deposit error:', err.message);
+  }
 });
 
 // Withdraw
-app.post('/api/withdraw', auth, async (req,res)=>{
-  const { amount, phone } = req.body||{};
-  if(!amount||!phone) return res.status(400).json({error:'amount & phone required'});
-  if(Number(amount)<200) return res.status(400).json({error:'Minimum 200'});
-  const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
-  if(u.balance < Number(amount)) return res.status(400).json({error:'Insufficient balance'});
-  const withdrawals = (await storage.getItem('withdrawals'))||[];
-  const w = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), status:'PENDING', requestedAt:Date.now() };
-  withdrawals.push(w); await storage.setItem('withdrawals',withdrawals);
-  res.json({message:'Withdrawal submitted'});
+app.post('/api/withdraw', auth, async (req, res) => {
+  const { amount, phone } = req.body;
+  if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
+  if (amount < 200) return res.status(400).json({ error: 'Minimum withdrawal is KES 200' });
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
-  const buttons = [[
-    { text:'✅ Approve', callback_data:`wd_approve_${w.id}` },
-    { text:'❌ Reject', callback_data:`wd_reject_${w.id}` }
-  ]];
-  await tgSend(TG_WITHDRAW_BOT, TG_WITHDRAW_CHAT, text, buttons);
+  const user = await getUserByEmail(req.user.email);
+  if (!user) return res.status(400).json({ error: 'User not found' });
+
+  const deposits = await storage.getItem('deposits') || [];
+  const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
+  if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
+  if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
+  if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
+
+  const withdrawals = await storage.getItem('withdrawals') || [];
+  const request = { id: crypto.randomUUID(), email: user.email, phone, amount, status: 'PENDING', requestedAt: Date.now() };
+  withdrawals.push(request);
+  await storage.setItem('withdrawals', withdrawals);
+
+  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+
+  // Telegram notification
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: `🟡 New Withdrawal Request
+Email: ${user.email}
+Phone: ${phone}
+Amount: KES ${amount}
+Withdrawal ID: ${request.id}
+Status: PENDING`,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Approve ✅", url: `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}` },
+            { text: "Reject ❌", url: `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}` }
+          ]
+        ]
+      }
+    });
+  } catch (err) {
+    console.error('Telegram withdrawal error:', err.message);
+  }
 });
 
-// Telegram webhook for callback buttons
-app.post('/api/telegram/webhook', async (req,res)=>{
-  const cb = req.body.callback_query; if(!cb) return res.sendStatus(200);
-  const data = cb.data||'';
-  
-  const answer = async (text, bot=TG_DEPOSIT_BOT)=> fetch(`https://api.telegram.org/bot${bot}/answerCallbackQuery`,{
-    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({callback_query_id:cb.id,text})
-  }).catch(()=>{});
+// Admin approve/reject deposit
+app.get('/api/admin/deposits/:id/:action', async (req, res) => {
+  const { id, action } = req.params;
+  const token = req.query.token;
+  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
 
-  // Deposit actions
-  if(data.startsWith('dep_')){
-    const [_,action,id]=data.split('_');
-    const deposits = (await storage.getItem('deposits'))||[];
-    const d = deposits.find(x=>x.id===id); if(!d||d.status!=='PENDING'){ await answer('Already processed'); return res.sendStatus(200);}
-    if(action==='approve'){ d.status='APPROVED'; d.processedAt=Date.now(); const u=await findUser(d.email); if(u){ u.balance+=Number(d.amount); await saveUser(u);} }
-    else { d.status='REJECTED'; d.processedAt=Date.now(); }
-    await storage.setItem('deposits',deposits);
-    await answer(`Deposit ${d.status}`);
+  const deposits = await storage.getItem('deposits') || [];
+  const d = deposits.find(x => x.id === id);
+  if (!d) return res.status(404).send('Deposit not found');
+  if (d.status !== 'PENDING') return res.status(400).send('Deposit already processed');
+
+  d.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+  d.processedAt = Date.now();
+  await storage.setItem('deposits', deposits);
+
+  if (d.status === 'APPROVED') {
+    const user = await getUserByEmail(d.email);
+    if (user) {
+      user.balance += Number(d.amount);
+      await saveUser(user);
+    }
   }
 
-  // Withdraw actions
-  if(data.startsWith('wd_')){
-    const [_,action,id]=data.split('_');
-    const withdrawals = (await storage.getItem('withdrawals'))||[];
-    const w = withdrawals.find(x=>x.id===id); if(!w||w.status!=='PENDING'){ await answer('Already processed', TG_WITHDRAW_BOT); return res.sendStatus(200);}
-    if(action==='approve'){ w.status='APPROVED'; w.processedAt=Date.now(); const u=await findUser(w.email); if(u){ u.balance-=Number(w.amount); await saveUser(u);} }
-    else { w.status='REJECTED'; w.processedAt=Date.now(); }
-    await storage.setItem('withdrawals',withdrawals);
-    await answer(`Withdrawal ${w.status}`, TG_WITHDRAW_BOT);
+  res.send(`Deposit ${d.status}`);
+});
+
+// Admin approve/reject withdrawal
+app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
+  const { id, action } = req.params;
+  const token = req.query.token;
+  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
+
+  const withdrawals = await storage.getItem('withdrawals') || [];
+  const w = withdrawals.find(x => x.id === id);
+  if (!w) return res.status(404).send('Withdrawal not found');
+  if (w.status !== 'PENDING') return res.status(400).send('Withdrawal already processed');
+
+  w.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+  w.processedAt = Date.now();
+  await storage.setItem('withdrawals', withdrawals);
+
+  if (w.status === 'APPROVED') {
+    const user = await getUserByEmail(w.email);
+    if (user) {
+      user.balance -= Number(w.amount);
+      await saveUser(user);
+    }
   }
 
-  res.sendStatus(200);
+  res.send(`Withdrawal ${w.status}`);
 });
 
 // Buy fridge
-app.post('/api/buy', auth, async (req,res)=>{
-  const { fridgeId } = req.body||{}; if(!fridgeId) return res.status(400).json({error:'fridgeId required'});
-  const item=FRIDGES.find(f=>f.id===fridgeId); if(!item) return res.status(400).json({error:'Invalid fridge'});
-  const u=await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
-  if(u.balance < item.price) return res.status(400).json({error:'Insufficient balance'});
-  u.balance -= item.price; u.fridges.push({id:item.id,name:item.name,price:item.price,boughtAt:Date.now()}); await saveUser(u);
-  res.json({message:'Bought', balance:u.balance});
+app.post('/api/buy', auth, async (req, res) => {
+  const { fridgeId } = req.body;
+  if (!fridgeId) return res.status(400).json({ error: 'fridgeId required' });
+
+  const item = FRIDGES.find(f => f.id === fridgeId);
+  if (!item) return res.status(400).json({ error: 'Invalid fridge' });
+
+  const user = await getUserByEmail(req.user.email);
+  if (!user) return res.status(400).json({ error: 'User not found' });
+  if (user.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
+
+  user.balance -= item.price;
+  user.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
+  await saveUser(user);
+
+  res.json({ message: 'Bought ' + item.name, balance: user.balance });
 });
 
 // Status
-app.get('/api/status',(req,res)=>res.json({status:'ok', time:Date.now(), till:MPESA_TILL, name:MPESA_NAME}));
+app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL }));
 
-app.listen(PORT,()=>console.log(`Bitfreeze running on ${PORT}`));
+// Start server
+app.listen(PORT, () => console.log(`Bitfreeze server running on port ${PORT}`));
