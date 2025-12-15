@@ -1,5 +1,4 @@
 require('dotenv').config();
-
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -16,7 +15,7 @@ const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
-// Telegram
+// Telegram Bot
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -41,15 +40,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Initialize storage
 (async () => {
   await storage.init({ dir: path.join(__dirname, 'persist') });
-
   if (!await storage.getItem('users')) await storage.setItem('users', []);
   if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
   if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
-
   console.log('Storage initialized.');
 })();
 
-// Helpers
+// Helper functions
 async function findUser(emailOrPhone) {
   const users = await storage.getItem('users') || [];
   return users.find(u => u.email === emailOrPhone || u.phone === emailOrPhone);
@@ -95,6 +92,7 @@ function adminAuth(req, res, next) {
 app.post('/api/register', async (req, res) => {
   const { email, password, phone, ref } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
   const users = await storage.getItem('users');
   if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
 
@@ -117,8 +115,10 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
   const user = await findUser(email);
   if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
 
@@ -145,22 +145,42 @@ app.post('/api/deposit', auth, async (req, res) => {
   if (!user) return res.status(400).json({ error: 'User not found' });
 
   const deposits = await storage.getItem('deposits') || [];
-  const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
+  const depositRequest = {
+    id: crypto.randomUUID(),
+    email: user.email,
+    phone,
+    amount,
+    mpesaCode,
+    status: 'PENDING',
+    requestedAt: Date.now()
+  };
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
   res.json({ message: 'Deposit submitted. Await admin approval.' });
 
   // Telegram notification
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    try {
-      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `🟢 New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nDeposit ID: ${depositRequest.id}\nStatus: PENDING`
-      });
-    } catch (err) {
-      console.error('Telegram deposit error:', err.message);
-    }
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: `🟢 New Deposit Request
+Email: ${user.email}
+Phone: ${phone}
+Amount: KES ${amount}
+Deposit ID: ${depositRequest.id}
+MPESA Code: ${mpesaCode}
+Status: PENDING`,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Approve ✅", url: `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}` },
+            { text: "Reject ❌", url: `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}` }
+          ]
+        ]
+      }
+    });
+  } catch (err) {
+    console.error('Telegram deposit error:', err.message);
   }
 });
 
@@ -187,15 +207,26 @@ app.post('/api/withdraw', auth, async (req, res) => {
   res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 
   // Telegram notification
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    try {
-      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `🟡 New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nWithdrawal ID: ${request.id}\nStatus: PENDING`
-      });
-    } catch (err) {
-      console.error('Telegram withdrawal error:', err.message);
-    }
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: `🟡 New Withdrawal Request
+Email: ${user.email}
+Phone: ${phone}
+Amount: KES ${amount}
+Withdrawal ID: ${request.id}
+Status: PENDING`,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Approve ✅", url: `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}` },
+            { text: "Reject ❌", url: `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}` }
+          ]
+        ]
+      }
+    });
+  } catch (err) {
+    console.error('Telegram withdrawal error:', err.message);
   }
 });
 
