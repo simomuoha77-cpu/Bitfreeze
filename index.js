@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
-const DOMAIN = process.env.DOMAIN || 'http://localhost:3000';
+const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
 // Emails
 const DEPOSIT_EMAIL = process.env.DEPOSIT_EMAIL;
