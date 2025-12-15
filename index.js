@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app = express();
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+const PORT = process.env.PORT || 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
@@ -40,15 +40,22 @@ app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize storage
+// Initialize storage safely
 (async () => {
-  await storage.init({ dir: path.join(__dirname, 'persist') });
+  try {
+    await storage.init({
+      dir: path.join(__dirname, 'persist'),
+      forgiveParseErrors: true
+    });
 
-  if (!await storage.getItem('users')) await storage.setItem('users', []);
-  if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
-  if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
+    if (!await storage.getItem('users')) await storage.setItem('users', []);
+    if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
+    if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
 
-  console.log('Storage initialized.');
+    console.log('Storage initialized.');
+  } catch (err) {
+    console.error('Storage init failed:', err);
+  }
 })();
 
 // Helpers
@@ -76,8 +83,7 @@ function auth(req, res, next) {
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
   const token = a.slice(7);
   try {
-    const p = jwt.verify(token, SECRET);
-    req.user = p;
+    req.user = jwt.verify(token, SECRET);
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
@@ -93,60 +99,10 @@ function adminAuth(req, res, next) {
 
 // Nodemailer
 function createTransporter(email, pass) {
-    return nodemailer.createTransport({ service: 'gmail', auth: { user: email, pass: pass } });
+  return nodemailer.createTransport({ service: 'gmail', auth: { user: email, pass: pass } });
 }
 
-async function sendDepositEmail(user, depositRequest) {
-    const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
-    const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
-    const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
-
-    try {
-        await transporter.sendMail({
-            from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
-            to: DEPOSIT_EMAIL,
-            subject: `New Deposit Request: ${user.email}`,
-            html: `
-              <p>New Deposit Request</p>
-              <p>Email: ${user.email}</p>
-              <p>Phone: ${depositRequest.phone}</p>
-              <p>Amount: KES ${depositRequest.amount}</p>
-              <p>Status: PENDING</p>
-              <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-            `
-        });
-        console.log('Deposit email sent');
-    } catch(err) {
-        console.error('Deposit email failed:', err);
-    }
-}
-
-async function sendWithdrawEmail(user, withdrawalRequest) {
-    const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
-    const approveLink = `${DOMAIN}/api/admin/withdrawals/${withdrawalRequest.id}/approve?token=${ADMIN_PASS}`;
-    const rejectLink = `${DOMAIN}/api/admin/withdrawals/${withdrawalRequest.id}/reject?token=${ADMIN_PASS}`;
-
-    try {
-        await transporter.sendMail({
-            from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
-            to: WITHDRAW_EMAIL,
-            subject: `New Withdrawal Request: ${user.email}`,
-            html: `
-              <p>New Withdrawal Request</p>
-              <p>Email: ${user.email}</p>
-              <p>Phone: ${withdrawalRequest.phone}</p>
-              <p>Amount: KES ${withdrawalRequest.amount}</p>
-              <p>Status: PENDING</p>
-              <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-            `
-        });
-        console.log('Withdrawal email sent');
-    } catch(err) {
-        console.error('Withdrawal email failed:', err);
-    }
-}
-
-// ====== API ======
+// ========== API ==========
 
 // Register
 app.post('/api/register', async (req, res) => {
@@ -206,7 +162,26 @@ app.post('/api/deposit', auth, async (req, res) => {
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  await sendDepositEmail(user, depositRequest);
+  try {
+    const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
+    const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
+    const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
+    await transporter.sendMail({
+      from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
+      to: DEPOSIT_EMAIL,
+      subject: `New Deposit Request: ${user.email}`,
+      html: `
+        <p>New Deposit Request</p>
+        <p>Email: ${user.email}</p>
+        <p>Phone: ${phone}</p>
+        <p>Amount: KES ${amount}</p>
+        <p>Status: PENDING</p>
+        <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
+      `
+    });
+  } catch (err) {
+    console.error('Email error:', err);
+  }
 
   res.json({ message: 'Deposit submitted. Await admin approval.' });
 });
@@ -231,7 +206,26 @@ app.post('/api/withdraw', auth, async (req, res) => {
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  await sendWithdrawEmail(user, request);
+  try {
+    const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
+    const approveLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
+    const rejectLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
+    await transporter.sendMail({
+      from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
+      to: WITHDRAW_EMAIL,
+      subject: `New Withdrawal Request: ${user.email}`,
+      html: `
+        <p>New Withdrawal Request</p>
+        <p>Email: ${user.email}</p>
+        <p>Phone: ${phone}</p>
+        <p>Amount: KES ${amount}</p>
+        <p>Status: PENDING</p>
+        <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
+      `
+    });
+  } catch (err) {
+    console.error('Email error:', err);
+  }
 
   res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 });
