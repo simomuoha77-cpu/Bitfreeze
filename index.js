@@ -24,7 +24,7 @@ const WITHDRAW_EMAIL_PASS = process.env.WITHDRAW_EMAIL_PASS;
 
 // MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
-const MPESA_NAME = process.env.MPESA_NAME || 'Simon Gathendu';
+const MPESA_NAME = process.env.MPESA_NAME || 'Bitfreeze';
 
 // Fridges catalog
 const FRIDGES = [
@@ -40,12 +40,9 @@ app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize storage safely
+// Initialize storage
 (async () => {
-  await storage.init({
-    dir: path.join(__dirname, 'persist'),
-    forgiveParseErrors: true
-  });
+  await storage.init({ dir: path.join(__dirname, 'persist') });
 
   if (!await storage.getItem('users')) await storage.setItem('users', []);
   if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
@@ -148,86 +145,76 @@ app.get('/api/me', auth, async (req, res) => {
 
 // Deposit
 app.post('/api/deposit', auth, async (req, res) => {
-  try {
-    const { amount, mpesaCode, phone } = req.body;
-    if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
+  const { amount, mpesaCode, phone } = req.body;
+  if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'Phone, amount, and MPESA code required' });
 
-    const user = await getUserByEmail(req.user.email);
-    if (!user) return res.status(400).json({ error: 'User not found' });
+  const user = await getUserByEmail(req.user.email);
+  if (!user) return res.status(400).json({ error: 'User not found' });
 
-    const deposits = await storage.getItem('deposits') || [];
-    const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
-    deposits.push(depositRequest);
-    await storage.setItem('deposits', deposits);
+  const deposits = await storage.getItem('deposits') || [];
+  const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
+  deposits.push(depositRequest);
+  await storage.setItem('deposits', deposits);
 
-    // Send admin email
-    const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
-    const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
-    const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
-    await transporter.sendMail({
-      from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
-      to: DEPOSIT_EMAIL,
-      subject: `New Deposit Request: ${user.email}`,
-      html: `
-        <p>New Deposit Request</p>
-        <p>Email: ${user.email}</p>
-        <p>Phone: ${phone}</p>
-        <p>Amount: KES ${amount}</p>
-        <p>Status: PENDING</p>
-        <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-      `
-    });
+  res.json({ message: 'Deposit submitted. Await admin approval.' });
 
-    res.json({ message: 'Deposit submitted. Await admin approval.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Deposit failed' });
-  }
+  // Send admin email async
+  const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
+  const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
+  const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
+  transporter.sendMail({
+    from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
+    to: DEPOSIT_EMAIL,
+    subject: `New Deposit Request: ${user.email}`,
+    html: `
+      <p>New Deposit Request</p>
+      <p>Email: ${user.email}</p>
+      <p>Phone: ${phone}</p>
+      <p>Amount: KES ${amount}</p>
+      <p>Status: PENDING</p>
+      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
+    `
+  }).catch(err => console.error('Deposit email error:', err));
 });
 
 // Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
-  try {
-    const { amount, phone } = req.body;
-    if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
-    if (amount < 200) return res.status(400).json({ error: 'Minimum withdrawal is KES 200' });
+  const { amount, phone } = req.body;
+  if (!amount || !phone) return res.status(400).json({ error: 'Phone and amount required' });
+  if (amount < 200) return res.status(400).json({ error: 'Minimum withdrawal is KES 200' });
 
-    const user = await getUserByEmail(req.user.email);
-    if (!user) return res.status(400).json({ error: 'User not found' });
+  const user = await getUserByEmail(req.user.email);
+  if (!user) return res.status(400).json({ error: 'User not found' });
 
-    const deposits = await storage.getItem('deposits') || [];
-    const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
-    if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
-    if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
-    if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
+  const deposits = await storage.getItem('deposits') || [];
+  const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
+  if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
+  if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
+  if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
-    const withdrawals = await storage.getItem('withdrawals') || [];
-    const request = { id: crypto.randomUUID(), email: user.email, phone, amount, status: 'PENDING', requestedAt: Date.now() };
-    withdrawals.push(request);
-    await storage.setItem('withdrawals', withdrawals);
+  const withdrawals = await storage.getItem('withdrawals') || [];
+  const request = { id: crypto.randomUUID(), email: user.email, phone, amount, status: 'PENDING', requestedAt: Date.now() };
+  withdrawals.push(request);
+  await storage.setItem('withdrawals', withdrawals);
 
-    const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
-    const approveLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
-    const rejectLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
-    await transporter.sendMail({
-      from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
-      to: WITHDRAW_EMAIL,
-      subject: `New Withdrawal Request: ${user.email}`,
-      html: `
-        <p>New Withdrawal Request</p>
-        <p>Email: ${user.email}</p>
-        <p>Phone: ${phone}</p>
-        <p>Amount: KES ${amount}</p>
-        <p>Status: PENDING</p>
-        <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-      `
-    });
+  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 
-    res.json({ message: 'Withdrawal submitted. Await admin approval.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Withdrawal failed' });
-  }
+  const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
+  const approveLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
+  const rejectLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
+  transporter.sendMail({
+    from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
+    to: WITHDRAW_EMAIL,
+    subject: `New Withdrawal Request: ${user.email}`,
+    html: `
+      <p>New Withdrawal Request</p>
+      <p>Email: ${user.email}</p>
+      <p>Phone: ${phone}</p>
+      <p>Amount: KES ${amount}</p>
+      <p>Status: PENDING</p>
+      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
+    `
+  }).catch(err => console.error('Withdrawal email error:', err));
 });
 
 // Admin approve/reject deposit
