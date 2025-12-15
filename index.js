@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
@@ -24,7 +24,6 @@ const WITHDRAW_EMAIL_PASS = process.env.WITHDRAW_EMAIL_PASS;
 
 // MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
-const MPESA_NAME = process.env.MPESA_NAME || 'Simon Gathendu';
 
 // Fridges catalog
 const FRIDGES = [
@@ -40,22 +39,17 @@ app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize storage safely
+// Initialize storage (patch: create files if missing)
 (async () => {
-  try {
-    await storage.init({
-      dir: path.join(__dirname, 'persist'),
-      forgiveParseErrors: true
-    });
+  await storage.init({ dir: path.join(__dirname, 'persist') });
 
-    if (!await storage.getItem('users')) await storage.setItem('users', []);
-    if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
-    if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
-
-    console.log('Storage initialized.');
-  } catch (err) {
-    console.error('Storage init failed:', err);
+  const files = ['users', 'deposits', 'withdrawals'];
+  for (const f of files) {
+    const exists = await storage.getItem(f);
+    if (!exists) await storage.setItem(f, []);
   }
+
+  console.log('Storage initialized.');
 })();
 
 // Helpers
@@ -83,7 +77,8 @@ function auth(req, res, next) {
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
   const token = a.slice(7);
   try {
-    req.user = jwt.verify(token, SECRET);
+    const p = jwt.verify(token, SECRET);
+    req.user = p;
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
@@ -136,7 +131,7 @@ app.post('/api/login', async (req, res) => {
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
+  res.json({ token, email: user.email, phone: user.phone, balance: user.balance, fridges: user.fridges });
 });
 
 // Fridges
@@ -162,6 +157,7 @@ app.post('/api/deposit', auth, async (req, res) => {
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
+  // Send admin email
   try {
     const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
     const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
@@ -179,8 +175,8 @@ app.post('/api/deposit', auth, async (req, res) => {
         <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
       `
     });
-  } catch (err) {
-    console.error('Email error:', err);
+  } catch (e) {
+    console.error('Email send failed', e);
   }
 
   res.json({ message: 'Deposit submitted. Await admin approval.' });
@@ -223,86 +219,12 @@ app.post('/api/withdraw', auth, async (req, res) => {
         <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
       `
     });
-  } catch (err) {
-    console.error('Email error:', err);
+  } catch (e) {
+    console.error('Withdrawal email failed', e);
   }
 
   res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 });
-
-// Admin approve/reject deposit
-app.get('/api/admin/deposits/:id/:action', async (req, res) => {
-  const { id, action } = req.params;
-  const token = req.query.token;
-  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
-
-  const deposits = await storage.getItem('deposits') || [];
-  const d = deposits.find(x => x.id === id);
-  if (!d) return res.status(404).send('Deposit not found');
-  if (d.status !== 'PENDING') return res.status(400).send('Deposit already processed');
-
-  d.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
-  d.processedAt = Date.now();
-  await storage.setItem('deposits', deposits);
-
-  if (d.status === 'APPROVED') {
-    const user = await getUserByEmail(d.email);
-    if (user) {
-      user.balance += Number(d.amount);
-      await saveUser(user);
-    }
-  }
-
-  res.send(`Deposit ${d.status}`);
-});
-
-// Admin approve/reject withdrawal
-app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
-  const { id, action } = req.params;
-  const token = req.query.token;
-  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
-
-  const withdrawals = await storage.getItem('withdrawals') || [];
-  const w = withdrawals.find(x => x.id === id);
-  if (!w) return res.status(404).send('Withdrawal not found');
-  if (w.status !== 'PENDING') return res.status(400).send('Withdrawal already processed');
-
-  w.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
-  w.processedAt = Date.now();
-  await storage.setItem('withdrawals', withdrawals);
-
-  if (w.status === 'APPROVED') {
-    const user = await getUserByEmail(w.email);
-    if (user) {
-      user.balance -= Number(w.amount);
-      await saveUser(user);
-    }
-  }
-
-  res.send(`Withdrawal ${w.status}`);
-});
-
-// Buy fridge
-app.post('/api/buy', auth, async (req, res) => {
-  const { fridgeId } = req.body;
-  if (!fridgeId) return res.status(400).json({ error: 'fridgeId required' });
-
-  const item = FRIDGES.find(f => f.id === fridgeId);
-  if (!item) return res.status(400).json({ error: 'Invalid fridge' });
-
-  const user = await getUserByEmail(req.user.email);
-  if (!user) return res.status(400).json({ error: 'User not found' });
-  if (user.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
-
-  user.balance -= item.price;
-  user.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
-  await saveUser(user);
-
-  res.json({ message: 'Bought ' + item.name, balance: user.balance });
-});
-
-// Status
-app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL }));
 
 // Start server
 app.listen(PORT, () => console.log(`Bitfreeze server running on port ${PORT}`));
