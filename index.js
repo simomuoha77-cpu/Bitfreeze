@@ -14,23 +14,13 @@ const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
-const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
+const DOMAIN = process.env.DOMAIN || 'http://localhost:3000';
 
 // Telegram bots
-const depositBotToken = process.env.TELEGRAM_BOT_TOKEN;
-const depositChatId = process.env.TELEGRAM_CHAT_ID;
-const withdrawBotToken = process.env.WITHDRAW_BOT_TOKEN;
-const withdrawChatId = process.env.WITHDRAW_CHAT_ID;
-
-let depositBot = null;
-if (depositBotToken && depositChatId) {
-  depositBot = new TelegramBot(depositBotToken);
-}
-
-let withdrawBot = null;
-if (withdrawBotToken && withdrawChatId) {
-  withdrawBot = new TelegramBot(withdrawBotToken);
-}
+const depositBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
+const withdrawBot = new TelegramBot(process.env.WITHDRAW_BOT_TOKEN, { polling: false });
+const DEPOSIT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const WITHDRAW_CHAT_ID = process.env.WITHDRAW_CHAT_ID;
 
 // MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
@@ -59,7 +49,7 @@ app.use(express.static(path.join(__dirname, 'public')));
   console.log('Storage initialized.');
 })();
 
-// Helpers
+// Helper functions
 async function findUser(emailOrPhone) {
   const users = await storage.getItem('users') || [];
   return users.find(u => u.email === emailOrPhone || u.phone === emailOrPhone);
@@ -105,7 +95,6 @@ function adminAuth(req, res, next) {
 app.post('/api/register', async (req, res) => {
   const { email, password, phone, ref } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-
   const users = await storage.getItem('users');
   if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
 
@@ -128,10 +117,8 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-
   const user = await findUser(email);
   if (!user) return res.status(400).json({ error: 'Invalid credentials' });
-
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
 
@@ -158,33 +145,18 @@ app.post('/api/deposit', auth, async (req, res) => {
   if (!user) return res.status(400).json({ error: 'User not found' });
 
   const deposits = await storage.getItem('deposits') || [];
-  const depositRequest = {
-    id: crypto.randomUUID(),
-    email: user.email,
-    phone,
-    amount,
-    mpesaCode,
-    status: 'PENDING',
-    requestedAt: Date.now(),
-  };
+  const depositRequest = { id: crypto.randomUUID(), email: user.email, phone, amount, mpesaCode, status: 'PENDING', requestedAt: Date.now() };
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  res.json({ message: 'Deposit submitted. Await admin approval.' });
+  res.json({ message: 'Deposit submitted. Await admin approval.', depositRequest });
 
-  // Send telegram notification (if bot available)
-  if (depositBot) {
-    const msg = `🟢 New Deposit Request
-Email: ${user.email}
-Phone: ${phone}
-Amount: KES ${amount}
-Deposit ID: ${depositRequest.id}
-MPESA Code: ${mpesaCode}
-Status: PENDING
-Approve: /approve_${depositRequest.id}
-Reject: /reject_${depositRequest.id}`;
-    depositBot.sendMessage(depositChatId, msg).catch(err => console.error('Deposit Telegram error:', err));
-  }
+  // Send Telegram notification to deposit bot
+  const approveUrl = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
+  const rejectUrl = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
+  depositBot.sendMessage(DEPOSIT_CHAT_ID, 
+    `🟢 New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nDeposit ID: ${depositRequest.id}\nMPESA Code: ${mpesaCode}\nStatus: PENDING\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}`
+  ).catch(console.error);
 });
 
 // Withdraw
@@ -199,38 +171,25 @@ app.post('/api/withdraw', auth, async (req, res) => {
   if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
   const withdrawals = await storage.getItem('withdrawals') || [];
-  const request = {
-    id: crypto.randomUUID(),
-    email: user.email,
-    phone,
-    amount,
-    status: 'PENDING',
-    requestedAt: Date.now(),
-    balance: user.balance, // include client balance
-  };
+  const request = { id: crypto.randomUUID(), email: user.email, phone, amount, status: 'PENDING', requestedAt: Date.now(), balanceAtRequest: user.balance };
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  res.json({ message: 'Withdrawal submitted. Await admin approval.', balance: user.balance });
+  res.json({ message: 'Withdrawal submitted. Await admin approval.', request });
 
-  // Send telegram notification (if bot available)
-  if (withdrawBot) {
-    const msg = `🔵 New Withdrawal Request
-Email: ${user.email}
-Phone: ${phone}
-Amount: KES ${amount}
-Balance: KES ${user.balance}
-Withdrawal ID: ${request.id}
-Status: PENDING
-Approve: /approve_${request.id}
-Reject: /reject_${request.id}`;
-    withdrawBot.sendMessage(withdrawChatId, msg).catch(err => console.error('Withdraw Telegram error:', err));
-  }
+  const approveUrl = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
+  const rejectUrl = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
+  withdrawBot.sendMessage(WITHDRAW_CHAT_ID, 
+    `🟢 New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${user.balance}\nWithdrawal ID: ${request.id}\nStatus: PENDING\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}`
+  ).catch(console.error);
 });
 
-// Admin approve/reject deposits
-app.get('/api/admin/deposits/:id/:action', adminAuth, async (req, res) => {
+// Admin endpoints to approve/reject deposit
+app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   const { id, action } = req.params;
+  const token = req.query.token;
+  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
+
   const deposits = await storage.getItem('deposits') || [];
   const d = deposits.find(x => x.id === id);
   if (!d) return res.status(404).send('Deposit not found');
@@ -251,9 +210,12 @@ app.get('/api/admin/deposits/:id/:action', adminAuth, async (req, res) => {
   res.send(`Deposit ${d.status}`);
 });
 
-// Admin approve/reject withdrawals
-app.get('/api/admin/withdrawals/:id/:action', adminAuth, async (req, res) => {
+// Admin endpoints to approve/reject withdrawal
+app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   const { id, action } = req.params;
+  const token = req.query.token;
+  if (token !== ADMIN_PASS) return res.status(401).send('Unauthorized');
+
   const withdrawals = await storage.getItem('withdrawals') || [];
   const w = withdrawals.find(x => x.id === id);
   if (!w) return res.status(404).send('Withdrawal not found');
