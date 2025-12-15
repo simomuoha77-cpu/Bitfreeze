@@ -1,4 +1,5 @@
 require('dotenv').config();
+
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -12,10 +13,9 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
-const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
+const DOMAIN = process.env.DOMAIN || 'http://localhost:3000';
 
-// Telegram
+// Telegram Bot
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -81,11 +81,18 @@ function auth(req, res, next) {
   }
 }
 
-// Admin middleware
-function adminAuth(req, res, next) {
-  const tok = req.headers['x-admin-token'] || '';
-  if (!tok || tok !== ADMIN_PASS) return res.status(401).json({ error: 'Admin auth required' });
-  next();
+// Telegram notification
+async function notifyTelegram(message) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message })
+    });
+  } catch (err) {
+    console.error('Telegram error:', err);
+  }
 }
 
 // ========== API ==========
@@ -148,24 +155,11 @@ app.post('/api/deposit', auth, async (req, res) => {
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  res.json({ message: 'Deposit submitted. Await admin approval.' });
+  // Notify admin via Telegram
+  const message = `💰 New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: ${mpesaCode}\nID: ${depositRequest.id}\nStatus: PENDING\nReply with /approve_${depositRequest.id} or /reject_${depositRequest.id}`;
+  await notifyTelegram(message);
 
-  // Telegram notification
-  const msg = `
-📥 New Deposit Request
-Email: ${user.email}
-Phone: ${phone}
-Amount: KES ${amount}
-MPESA Code: ${mpesaCode}
-Status: PENDING
-✅ Approve: /approve_${depositRequest.id}
-❌ Reject: /reject_${depositRequest.id}
-  `;
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg })
-  }).catch(err => console.error('Telegram deposit error:', err));
+  res.json({ message: 'Deposit submitted. Await admin approval.' });
 });
 
 // Withdraw
@@ -188,65 +182,64 @@ app.post('/api/withdraw', auth, async (req, res) => {
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+  // Notify admin via Telegram
+  const message = `💸 New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nID: ${request.id}\nStatus: PENDING\nReply with /approvew_${request.id} or /rejectw_${request.id}`;
+  await notifyTelegram(message);
 
-  const msg = `
-📤 New Withdrawal Request
-Email: ${user.email}
-Phone: ${phone}
-Amount: KES ${amount}
-Status: PENDING
-✅ Approve: /approve_${request.id}
-❌ Reject: /reject_${request.id}
-  `;
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg })
-  }).catch(err => console.error('Telegram withdrawal error:', err));
+  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 });
 
-// Admin approve/reject via Telegram commands (webhook)
-app.post('/telegram', bodyParser.json(), async (req, res) => {
-  const text = req.body.message?.text || '';
-  const chatId = req.body.message?.chat?.id;
-  if (!text || chatId != TELEGRAM_CHAT_ID) return res.sendStatus(200);
+// Telegram webhook
+app.post('/telegram', async (req, res) => {
+  const update = req.body;
+  if (!update.message || !update.message.text) return res.sendStatus(200);
 
-  const [cmd, id] = text.split('_');
-  if (!id) return res.sendStatus(200);
+  const text = update.message.text.trim();
+  const chatId = update.message.chat.id;
 
-  if (cmd === '/approve') {
-    let deposits = await storage.getItem('deposits') || [];
-    let d = deposits.find(x => x.id === id && x.status === 'PENDING');
-    if (d) {
-      d.status = 'APPROVED';
+  // Deposit approve/reject
+  if (text.startsWith('/approve_') || text.startsWith('/reject_')) {
+    const action = text.startsWith('/approve_') ? 'APPROVED' : 'REJECTED';
+    const id = text.split('_')[1];
+    const deposits = await storage.getItem('deposits') || [];
+    const d = deposits.find(x => x.id === id);
+    if (d && d.status === 'PENDING') {
+      d.status = action;
       d.processedAt = Date.now();
       await storage.setItem('deposits', deposits);
 
-      const user = await getUserByEmail(d.email);
-      if (user) { user.balance += Number(d.amount); await saveUser(user); }
+      if (action === 'APPROVED') {
+        const user = await getUserByEmail(d.email);
+        if (user) {
+          user.balance += Number(d.amount);
+          await saveUser(user);
+        }
+      }
 
-      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: `Deposit ${id} approved ✅` })
-      });
+      await notifyTelegram(`Deposit ${action}: ${d.email} | KES ${d.amount}`);
     }
   }
 
-  if (cmd === '/reject') {
-    let deposits = await storage.getItem('deposits') || [];
-    let d = deposits.find(x => x.id === id && x.status === 'PENDING');
-    if (d) {
-      d.status = 'REJECTED';
-      d.processedAt = Date.now();
-      await storage.setItem('deposits', deposits);
+  // Withdraw approve/reject
+  if (text.startsWith('/approvew_') || text.startsWith('/rejectw_')) {
+    const action = text.startsWith('/approvew_') ? 'APPROVED' : 'REJECTED';
+    const id = text.split('_')[1];
+    const withdrawals = await storage.getItem('withdrawals') || [];
+    const w = withdrawals.find(x => x.id === id);
+    if (w && w.status === 'PENDING') {
+      w.status = action;
+      w.processedAt = Date.now();
+      await storage.setItem('withdrawals', withdrawals);
 
-      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: `Deposit ${id} rejected ❌` })
-      });
+      if (action === 'APPROVED') {
+        const user = await getUserByEmail(w.email);
+        if (user) {
+          user.balance -= Number(w.amount);
+          await saveUser(user);
+        }
+      }
+
+      await notifyTelegram(`Withdrawal ${action}: ${w.email} | KES ${w.amount}`);
     }
   }
 
