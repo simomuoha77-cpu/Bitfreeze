@@ -132,7 +132,7 @@ app.post('/api/withdraw', auth, async (req,res)=>{
   const withdrawals = (await storage.getItem('withdrawals'))||[];
   const w = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), status:'PENDING', requestedAt:Date.now() };
   withdrawals.push(w); await storage.setItem('withdrawals',withdrawals);
-  res.json({message:'Withdrawal submitted'});
+  res.json({message:'Withdrawal submitted', balance:u.balance});
 
   const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
@@ -142,43 +142,41 @@ app.post('/api/withdraw', auth, async (req,res)=>{
   await tgSend(TG_WITHDRAW_BOT, TG_WITHDRAW_CHAT, text, buttons);
 });
 
-// Telegram callback endpoint
-app.post('/api/telegram/webhook', async (req,res)=>{
+// Telegram deposit callback
+app.post('/api/telegram/deposit', async (req,res)=>{
   const cb = req.body.callback_query; if(!cb) return res.sendStatus(200);
   const data = cb.data||'';
-  let botToken;
+  const answer = async (text)=> fetch(`https://api.telegram.org/bot${TG_DEPOSIT_BOT}/answerCallbackQuery`,{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({callback_query_id:cb.id,text})}).catch(()=>{});
+  
+  if(!data.startsWith('dep_')) return res.sendStatus(200);
 
-  // Determine bot for callback
-  if(data.startsWith('dep_')) botToken = TG_DEPOSIT_BOT;
-  else if(data.startsWith('wd_')) botToken = TG_WITHDRAW_BOT;
-  else return res.sendStatus(200);
+  const [_,action,id]=data.split('_');
+  const deposits = (await storage.getItem('deposits'))||[];
+  const d = deposits.find(x=>x.id===id); 
+  if(!d||d.status!=='PENDING'){ await answer('Already processed'); return res.sendStatus(200);}
+  if(action==='approve'){ d.status='APPROVED'; d.processedAt=Date.now(); const u=await findUser(d.email); if(u){ u.balance+=Number(d.amount); await saveUser(u);} }
+  else { d.status='REJECTED'; d.processedAt=Date.now(); }
+  await storage.setItem('deposits',deposits);
+  await answer(`Deposit ${d.status}`);
+  res.sendStatus(200);
+});
 
-  const answer = async (text)=> fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`,{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({callback_query_id:cb.id,text})}).catch(()=>{});
+// Telegram withdraw callback
+app.post('/api/telegram/withdraw', async (req,res)=>{
+  const cb = req.body.callback_query; if(!cb) return res.sendStatus(200);
+  const data = cb.data||'';
+  const answer = async (text)=> fetch(`https://api.telegram.org/bot${TG_WITHDRAW_BOT}/answerCallbackQuery`,{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({callback_query_id:cb.id,text})}).catch(()=>{});
+  
+  if(!data.startsWith('wd_')) return res.sendStatus(200);
 
-  // Deposit callbacks
-  if(data.startsWith('dep_')){
-    const [_,action,id]=data.split('_');
-    const deposits = (await storage.getItem('deposits'))||[];
-    const d = deposits.find(x=>x.id===id); 
-    if(!d||d.status!=='PENDING'){ await answer('Already processed'); return res.sendStatus(200);}
-    if(action==='approve'){ d.status='APPROVED'; d.processedAt=Date.now(); const u=await findUser(d.email); if(u){ u.balance+=Number(d.amount); await saveUser(u);} }
-    else { d.status='REJECTED'; d.processedAt=Date.now(); }
-    await storage.setItem('deposits',deposits);
-    await answer(`Deposit ${d.status}`);
-  }
-
-  // Withdraw callbacks
-  if(data.startsWith('wd_')){
-    const [_,action,id]=data.split('_');
-    const withdrawals = (await storage.getItem('withdrawals'))||[];
-    const w = withdrawals.find(x=>x.id===id);
-    if(!w||w.status!=='PENDING'){ await answer('Already processed'); return res.sendStatus(200);}
-    if(action==='approve'){ w.status='APPROVED'; w.processedAt=Date.now(); const u=await findUser(w.email); if(u){ u.balance-=Number(w.amount); await saveUser(u);} }
-    else { w.status='REJECTED'; w.processedAt=Date.now(); }
-    await storage.setItem('withdrawals',withdrawals);
-    await answer(`Withdrawal ${w.status}`);
-  }
-
+  const [_,action,id]=data.split('_');
+  const withdrawals = (await storage.getItem('withdrawals'))||[];
+  const w = withdrawals.find(x=>x.id===id); 
+  if(!w||w.status!=='PENDING'){ await answer('Already processed'); return res.sendStatus(200);}
+  if(action==='approve'){ w.status='APPROVED'; w.processedAt=Date.now(); const u=await findUser(w.email); if(u){ u.balance-=Number(w.amount); await saveUser(u);} }
+  else { w.status='REJECTED'; w.processedAt=Date.now(); }
+  await storage.setItem('withdrawals',withdrawals);
+  await answer(`Withdrawal ${w.status}`);
   res.sendStatus(200);
 });
 
