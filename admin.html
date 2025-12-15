@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Bitfreeze Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial; background:#0b0f14; color:#fff; padding:20px }
+    .box { background:#111827; padding:15px; margin-bottom:20px; border-radius:8px }
+    button { padding:8px 12px; margin-right:8px; cursor:pointer }
+  </style>
+</head>
+<body>
+
+<h2>Bitfreeze Admin Panel</h2>
+
+<div class="box">
+  <h3>Deposits</h3>
+  <div id="deposits">Loading...</div>
+</div>
+
+<div class="box">
+  <h3>Withdrawals</h3>
+  <div id="withdrawals">Loading...</div>
+</div>
+
+<script>
+const ADMIN_PASS = prompt("Enter admin password");
+
+async function load() {
+  const d = await fetch('/api/admin/list/deposits?token=' + ADMIN_PASS).then(r=>r.json());
+  const w = await fetch('/api/admin/list/withdrawals?token=' + ADMIN_PASS).then(r=>r.json());
+
+  document.getElementById('deposits').innerHTML =
+    d.map(x => `
+      <p>
+        ${x.email} | ${x.amount} | ${x.phone}
+        <button onclick="act('deposits','${x.id}','approve')">Approve</button>
+        <button onclick="act('deposits','${x.id}','reject')">Reject</button>
+      </p>
+    `).join('');
+
+  document.getElementById('withdrawals').innerHTML =
+    w.map(x => `
+      <p>
+        ${x.email} | ${x.amount} | ${x.phone}
+        <button onclick="act('withdrawals','${x.id}','approve')">Approve</button>
+        <button onclick="act('withdrawals','${x.id}','reject')">Reject</button>
+      </p>
+    `).join('');
+}
+
+function act(type,id,action){
+  fetch(`/api/admin/${type}/${id}/${action}?token=${ADMIN_PASS}`)
+    .then(()=>load());
+}
+
+load();
+</script>
+
+</body>
+</html>
