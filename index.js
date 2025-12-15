@@ -24,7 +24,7 @@ const WITHDRAW_EMAIL_PASS = process.env.WITHDRAW_EMAIL_PASS;
 
 // MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
-const MPESA_NAME = process.env.MPESA_NAME || 'Bitfreeze';
+const MPESA_NAME = process.env.MPESA_NAME || 'Simon Gathendu';
 
 // Fridges catalog
 const FRIDGES = [
@@ -93,10 +93,60 @@ function adminAuth(req, res, next) {
 
 // Nodemailer
 function createTransporter(email, pass) {
-  return nodemailer.createTransport({ service: 'gmail', auth: { user: email, pass: pass } });
+    return nodemailer.createTransport({ service: 'gmail', auth: { user: email, pass: pass } });
 }
 
-// ========== API ==========
+async function sendDepositEmail(user, depositRequest) {
+    const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
+    const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
+    const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
+
+    try {
+        await transporter.sendMail({
+            from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
+            to: DEPOSIT_EMAIL,
+            subject: `New Deposit Request: ${user.email}`,
+            html: `
+              <p>New Deposit Request</p>
+              <p>Email: ${user.email}</p>
+              <p>Phone: ${depositRequest.phone}</p>
+              <p>Amount: KES ${depositRequest.amount}</p>
+              <p>Status: PENDING</p>
+              <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
+            `
+        });
+        console.log('Deposit email sent');
+    } catch(err) {
+        console.error('Deposit email failed:', err);
+    }
+}
+
+async function sendWithdrawEmail(user, withdrawalRequest) {
+    const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
+    const approveLink = `${DOMAIN}/api/admin/withdrawals/${withdrawalRequest.id}/approve?token=${ADMIN_PASS}`;
+    const rejectLink = `${DOMAIN}/api/admin/withdrawals/${withdrawalRequest.id}/reject?token=${ADMIN_PASS}`;
+
+    try {
+        await transporter.sendMail({
+            from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
+            to: WITHDRAW_EMAIL,
+            subject: `New Withdrawal Request: ${user.email}`,
+            html: `
+              <p>New Withdrawal Request</p>
+              <p>Email: ${user.email}</p>
+              <p>Phone: ${withdrawalRequest.phone}</p>
+              <p>Amount: KES ${withdrawalRequest.amount}</p>
+              <p>Status: PENDING</p>
+              <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
+            `
+        });
+        console.log('Withdrawal email sent');
+    } catch(err) {
+        console.error('Withdrawal email failed:', err);
+    }
+}
+
+// ====== API ======
 
 // Register
 app.post('/api/register', async (req, res) => {
@@ -156,25 +206,9 @@ app.post('/api/deposit', auth, async (req, res) => {
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  res.json({ message: 'Deposit submitted. Await admin approval.' });
+  await sendDepositEmail(user, depositRequest);
 
-  // Send admin email async
-  const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
-  const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
-  const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
-  transporter.sendMail({
-    from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
-    to: DEPOSIT_EMAIL,
-    subject: `New Deposit Request: ${user.email}`,
-    html: `
-      <p>New Deposit Request</p>
-      <p>Email: ${user.email}</p>
-      <p>Phone: ${phone}</p>
-      <p>Amount: KES ${amount}</p>
-      <p>Status: PENDING</p>
-      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-    `
-  }).catch(err => console.error('Deposit email error:', err));
+  res.json({ message: 'Deposit submitted. Await admin approval.' });
 });
 
 // Withdraw
@@ -197,24 +231,9 @@ app.post('/api/withdraw', auth, async (req, res) => {
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+  await sendWithdrawEmail(user, request);
 
-  const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
-  const approveLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
-  const rejectLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
-  transporter.sendMail({
-    from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
-    to: WITHDRAW_EMAIL,
-    subject: `New Withdrawal Request: ${user.email}`,
-    html: `
-      <p>New Withdrawal Request</p>
-      <p>Email: ${user.email}</p>
-      <p>Phone: ${phone}</p>
-      <p>Amount: KES ${amount}</p>
-      <p>Status: PENDING</p>
-      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-    `
-  }).catch(err => console.error('Withdrawal email error:', err));
+  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 });
 
 // Admin approve/reject deposit
