@@ -8,7 +8,7 @@ const cors = require('cors');
 const storage = require('node-persist');
 const path = require('path');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
+const TelegramBot = require('node-telegram-bot-api');
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -16,11 +16,10 @@ const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
-// Emails
-const DEPOSIT_EMAIL = process.env.DEPOSIT_EMAIL;
-const DEPOSIT_EMAIL_PASS = process.env.DEPOSIT_EMAIL_PASS;
-const WITHDRAW_EMAIL = process.env.WITHDRAW_EMAIL;
-const WITHDRAW_EMAIL_PASS = process.env.WITHDRAW_EMAIL_PASS;
+// Telegram Bot
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_BOT_KEY';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || 'YOUR_CHAT_ID';
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 
 // MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
@@ -43,11 +42,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Initialize storage
 (async () => {
   await storage.init({ dir: path.join(__dirname, 'persist') });
-
   if (!await storage.getItem('users')) await storage.setItem('users', []);
   if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
   if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
-
   console.log('Storage initialized.');
 })();
 
@@ -84,27 +81,18 @@ function auth(req, res, next) {
   }
 }
 
-// Nodemailer transporter
-function createTransporter(email, pass) {
-  return nodemailer.createTransport({ service: 'gmail', auth: { user: email, pass: pass } });
+// Admin middleware
+function adminAuth(req, res, next) {
+  const tok = req.headers['x-admin-token'] || '';
+  if (!tok || tok !== ADMIN_PASS) return res.status(401).json({ error: 'Admin auth required' });
+  next();
 }
 
-// ======= API =======
-
-// Config for frontend
-app.get('/api/config', (req, res) => {
-  res.json({
-    depositEmail: DEPOSIT_EMAIL,
-    withdrawEmail: WITHDRAW_EMAIL,
-    mpesaTill: MPESA_TILL,
-    mpesaName: MPESA_NAME,
-    domain: DOMAIN
-  });
-});
+// ========== API ==========
 
 // Register
 app.post('/api/register', async (req, res) => {
-  const { email, password, phone, ref } = req.body;
+  const { email, password, phone, ref } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   const users = await storage.getItem('users');
   if (users.find(u => u.email === email)) return res.status(400).json({ error: 'User already exists' });
@@ -126,7 +114,7 @@ app.post('/api/register', async (req, res) => {
 
 // Login
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   const user = await findUser(email);
   if (!user) return res.status(400).json({ error: 'Invalid credentials' });
@@ -160,25 +148,14 @@ app.post('/api/deposit', auth, async (req, res) => {
   deposits.push(depositRequest);
   await storage.setItem('deposits', deposits);
 
-  // Send email async
-  const transporter = createTransporter(DEPOSIT_EMAIL, DEPOSIT_EMAIL_PASS);
+  // Send Telegram message
   const approveLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/approve?token=${ADMIN_PASS}`;
   const rejectLink = `${DOMAIN}/api/admin/deposits/${depositRequest.id}/reject?token=${ADMIN_PASS}`;
-  transporter.sendMail({
-    from: `"Bitfreeze Deposit" <${DEPOSIT_EMAIL}>`,
-    to: DEPOSIT_EMAIL,
-    subject: `New Deposit Request: ${user.email}`,
-    html: `
-      <p>New Deposit Request</p>
-      <p>Email: ${user.email}</p>
-      <p>Phone: ${phone}</p>
-      <p>Amount: KES ${amount}</p>
-      <p>Status: PENDING</p>
-      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-    `
-  }).catch(err => console.error('Deposit email error:', err));
+  bot.sendMessage(TELEGRAM_CHAT_ID, 
+    `New Deposit Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nStatus: PENDING\nApprove: ${approveLink}\nReject: ${rejectLink}`
+  ).catch(console.error);
 
-  res.json({ message: 'Deposit submitted. Await admin approval.' });
+  res.json({ message: 'Deposit submitted. Await admin approval via Telegram.' });
 });
 
 // Withdraw
@@ -201,25 +178,13 @@ app.post('/api/withdraw', auth, async (req, res) => {
   withdrawals.push(request);
   await storage.setItem('withdrawals', withdrawals);
 
-  // Send email async
-  const transporter = createTransporter(WITHDRAW_EMAIL, WITHDRAW_EMAIL_PASS);
   const approveLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/approve?token=${ADMIN_PASS}`;
   const rejectLink = `${DOMAIN}/api/admin/withdrawals/${request.id}/reject?token=${ADMIN_PASS}`;
-  transporter.sendMail({
-    from: `"Bitfreeze Withdraw" <${WITHDRAW_EMAIL}>`,
-    to: WITHDRAW_EMAIL,
-    subject: `New Withdrawal Request: ${user.email}`,
-    html: `
-      <p>New Withdrawal Request</p>
-      <p>Email: ${user.email}</p>
-      <p>Phone: ${phone}</p>
-      <p>Amount: KES ${amount}</p>
-      <p>Status: PENDING</p>
-      <p><a href="${approveLink}">Approve</a> | <a href="${rejectLink}">Reject</a></p>
-    `
-  }).catch(err => console.error('Withdrawal email error:', err));
+  bot.sendMessage(TELEGRAM_CHAT_ID, 
+    `New Withdrawal Request\nEmail: ${user.email}\nPhone: ${phone}\nAmount: KES ${amount}\nStatus: PENDING\nApprove: ${approveLink}\nReject: ${rejectLink}`
+  ).catch(console.error);
 
-  res.json({ message: 'Withdrawal submitted. Await admin approval.' });
+  res.json({ message: 'Withdrawal submitted. Await admin approval via Telegram.' });
 });
 
 // Admin approve/reject deposit
