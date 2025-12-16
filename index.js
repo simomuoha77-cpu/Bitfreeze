@@ -33,7 +33,7 @@ const FRIDGES = [
   { id: '12ft', name: '12 ft Fridge', price: 8000, dailyEarn: 350, img: 'images/fridge12ft.jpg' },
 ];
 
-// Referral rules
+// Referral reward rules
 const REFERRAL_RULES = [
   { min: 8000, reward: 500 },
   { min: 6000, reward: 350 },
@@ -60,7 +60,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 async function getUsers(){ return (await storage.getItem('users')) || []; }
 async function saveUsers(u){ await storage.setItem('users', u); }
 async function findUser(email){ return (await getUsers()).find(x=>x.email===email); }
-async function saveUser(user){ const u=await getUsers(); const i=u.findIndex(x=>x.email===user.email); if(i>-1) u[i]=user; else u.push(user); await saveUsers(u); }
+async function saveUser(user){ 
+  const u = await getUsers(); 
+  const i = u.findIndex(x=>x.email===user.email); 
+  if(i>-1) u[i]=user; 
+  else u.push(user); 
+  await saveUsers(u); 
+}
 
 // Auth middleware
 function auth(req,res,next){ 
@@ -88,9 +94,8 @@ app.post('/api/register', async (req,res)=>{
   const users = await getUsers();
   if(users.find(u=>u.email===email)) return res.status(400).json({error:'User exists'});
   const hashed = await bcrypt.hash(password,10);
-  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now() };
+  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now(), withdrawPhone:null, referredBy:ref||null };
   users.push(user); await saveUsers(users);
-  if(ref){ const inv=users.find(u=>u.email===String(ref)); if(inv){ inv.referrals.push({email,createdAt:Date.now()}); await saveUsers(users); } }
   res.json({message:'Registered', email});
 });
 
@@ -100,7 +105,7 @@ app.post('/api/login', async (req,res)=>{
   const user = await findUser(email); if(!user) return res.status(400).json({error:'Invalid'});
   const ok = await bcrypt.compare(password,user.password); if(!ok) return res.status(400).json({error:'Invalid'});
   const token = jwt.sign({email:user.email}, SECRET, {expiresIn:'7d'});
-  res.json({ token, email:user.email, phone:user.phone, balance:user.balance, whatsapp:'https://whatsapp.com/channel/0029VbBH6VX5PO10Jf9u1g04' });
+  res.json({ token, email:user.email, phone:user.phone, balance:user.balance });
 });
 
 // Fridges
@@ -109,51 +114,74 @@ app.get('/api/fridges',(req,res)=>res.json({fridges:FRIDGES}));
 // Profile
 app.get('/api/me', auth, async (req,res)=>{
   const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'Not found'});
-  res.json({ user:{ email:u.email, phone:u.phone, balance:u.balance, fridges:u.fridges, referrals:u.referrals, whatsapp:'https://whatsapp.com/channel/0029VbBH6VX5PO10Jf9u1g04' } });
+  res.json({ user:{ email:u.email, phone:u.phone, balance:u.balance, fridges:u.fridges, referrals:u.referrals } });
 });
 
 // Deposit
-app.post('/api/deposit', auth, async (req,res)=>{
+app.post('/api/deposit', auth, async(req,res)=>{
   const { amount, mpesaCode, phone } = req.body||{};
-  if(!amount||!mpesaCode||!phone) return res.status(400).json({error:'amount, mpesaCode, phone required'});
+  if(!amount || !mpesaCode || !phone) return res.status(400).json({error:'amount, mpesaCode, phone required'});
   const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
+
+  // First deposit sets withdrawPhone
+  if(!u.withdrawPhone) u.withdrawPhone = phone;
+
   const deposits = (await storage.getItem('deposits'))||[];
   const d = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), mpesaCode, status:'PENDING', requestedAt:Date.now() };
-  deposits.push(d); await storage.setItem('deposits',deposits);
+  deposits.push(d);
+  await storage.setItem('deposits', deposits);
+  await saveUser(u);
   res.json({message:'Deposit submitted'});
 
+  // Telegram notification
   const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${d.id}\nStatus: PENDING`;
   const buttons = [[
     { text:'✅ Approve', url:`${DOMAIN}/api/admin/deposits/${d.id}/approve?token=${ADMIN_PASS}` },
     { text:'❌ Reject', url:`${DOMAIN}/api/admin/deposits/${d.id}/reject?token=${ADMIN_PASS}` }
   ]];
-  await tgSend(text, buttons);
+  await tgSend(text,buttons);
+
+  // Referral reward
+  if(u.referredBy){
+    const refUser = await findUser(u.referredBy);
+    if(refUser){
+      for(const rule of REFERRAL_RULES){
+        if(Number(amount) >= rule.min){
+          refUser.balance += rule.reward;
+          await saveUser(refUser);
+          break;
+        }
+      }
+    }
+  }
 });
 
 // Withdraw
-app.post('/api/withdraw', auth, async (req,res)=>{
+app.post('/api/withdraw', auth, async(req,res)=>{
   const { amount, phone } = req.body||{};
-  if(!amount||!phone) return res.status(400).json({error:'amount & phone required'});
-  if(Number(amount)<200) return res.status(400).json({error:'Minimum 200'});
+  if(!amount || !phone) return res.status(400).json({error:'amount & phone required'});
   const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
 
-  // Only allow withdrawal if user has a deposit
-  const deposits = await storage.getItem('deposits') || [];
-  const hasDeposit = deposits.find(d => d.email===u.email && d.status==='APPROVED');
-  if(!hasDeposit) return res.status(400).json({error:'Cannot withdraw before depositing'});
+  // Block withdraw if never deposited
+  if(!u.withdrawPhone) return res.status(400).json({error:'Cannot withdraw before making a deposit'});
+
+  // Must match original deposit phone
+  if(phone !== u.withdrawPhone) return res.status(400).json({error:`Withdraw allowed only to original deposit phone ${u.withdrawPhone}`});
 
   if(u.balance < Number(amount)) return res.status(400).json({error:'Insufficient balance'});
+
   const withdrawals = (await storage.getItem('withdrawals'))||[];
   const w = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), status:'PENDING', requestedAt:Date.now() };
-  withdrawals.push(w); await storage.setItem('withdrawals',withdrawals);
+  withdrawals.push(w);
+  await storage.setItem('withdrawals',withdrawals);
   res.json({message:'Withdrawal submitted'});
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone} (copy easily)\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
     { text:'✅ Approve', url:`${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text:'❌ Reject', url:`${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
   ]];
-  await tgSend(text, buttons);
+  await tgSend(text,buttons);
 });
 
 // Admin approve/reject deposit
@@ -168,39 +196,7 @@ app.get('/api/admin/deposits/:id/:action', async (req,res)=>{
   d.status = action.toUpperCase()==='APPROVE'?'APPROVED':'REJECTED';
   d.processedAt = Date.now();
   await storage.setItem('deposits',deposits);
-
-  if(d.status==='APPROVED'){
-    const u=await findUser(d.email);
-    if(u){
-      u.balance+=Number(d.amount);
-      await saveUser(u);
-
-      // Referral reward
-      const users = await getUsers();
-      for(const referrer of users){
-        const referral = referrer.referrals.find(r=>r.email===u.email);
-        if(referral){
-          let reward=0;
-          for(const rule of REFERRAL_RULES){
-            if(Number(d.amount)>=rule.min){
-              reward=rule.reward;
-              break;
-            }
-          }
-          if(reward>0){
-            referrer.balance+=reward;
-            await saveUser(referrer);
-            if(TG_BOT && TG_CHAT){
-              const text=`🎁 <b>Referral Reward</b>\nYour referral <b>${u.email}</b> deposited KES ${d.amount}.\nYou earned KES ${reward}!`;
-              await tgSend(text);
-            }
-          }
-          break;
-        }
-      }
-    }
-  }
-
+  if(d.status==='APPROVED'){ const u=await findUser(d.email); if(u){ u.balance+=Number(d.amount); await saveUser(u);} }
   res.send(`Deposit ${d.status}`);
 });
 
@@ -232,22 +228,34 @@ app.post('/api/buy', auth, async (req,res)=>{
   res.json({message:`Bought ${item.name}`, balance:u.balance});
 });
 
-// Auto daily earnings at 12:00 AM Kenya Time
-setInterval(async ()=>{
-  const now = new Date();
-  const kenyaHour = now.getUTCHours() + 3; // UTC+3
-  const kenyaMinute = now.getUTCMinutes();
-  if(kenyaHour===0 && kenyaMinute<5){ 
-    const users = await getUsers();
-    for(const u of users){
-      for(const f of u.fridges){
-        const fridge = FRIDGES.find(fr=>fr.id===f.id);
-        if(fridge) u.balance += fridge.dailyEarn;
-      }
+// =============================== DAILY EARNINGS AT 12:00 AM KENYA ===============================
+async function runDailyEarnings(){
+  const users = await getUsers();
+  const today = new Date().toLocaleDateString('en-GB', { timeZone:'Africa/Nairobi' });
+  for(const u of users){
+    if(u.lastPaid===today) continue;
+    let earn=0;
+    for(const f of u.fridges){
+      const fridge = FRIDGES.find(fr=>fr.id===f.id);
+      if(fridge) earn += fridge.dailyEarn;
     }
-    await saveUsers(users);
+    if(earn>0){
+      u.balance += earn;
+      u.lastPaid = today;
+    }
   }
-}, 60*1000); // check every 1 minute
+  await saveUsers(users);
+}
+
+// Check every 5 minutes if it's 12:00 AM Nairobi time
+setInterval(async()=>{
+  const now = new Date();
+  const hours = now.toLocaleString('en-US', { hour12:false, hour:'2-digit', timeZone:'Africa/Nairobi' });
+  const minutes = now.toLocaleString('en-US', { minute:'2-digit', timeZone:'Africa/Nairobi' });
+  if(Number(hours)===0 && Number(minutes)===0){
+    await runDailyEarnings();
+  }
+},5*60*1000);
 
 // Status
 app.get('/api/status',(req,res)=>res.json({status:'ok', time:Date.now(), till:MPESA_TILL, name:MPESA_NAME}));
