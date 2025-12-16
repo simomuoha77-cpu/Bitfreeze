@@ -15,9 +15,11 @@ const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 
-// Telegram Bot
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+// Telegram Bots
+const TELEGRAM_DEPOSIT_BOT = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_DEPOSIT_CHAT = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_WITHDRAW_BOT = process.env.TELEGRAM_WITHDRAW_BOT;
+const TELEGRAM_WITHDRAW_CHAT = process.env.TELEGRAM_WITHDRAW_CHAT;
 
 // MPESA Manual
 const MPESA_TILL = process.env.MPESA_TILL || '6992349';
@@ -101,7 +103,8 @@ app.post('/api/register', async (req, res) => {
   await saveUser(newUser);
 
   if (ref) {
-    const inviter = await getUserByEmail(String(ref));
+    const decodedRef = decodeURIComponent(String(ref)); // Fix referral link decoding
+    const inviter = await getUserByEmail(decodedRef);
     if (inviter) {
       inviter.referrals.push({ email, createdAt: Date.now() });
       await saveUser(inviter);
@@ -159,16 +162,16 @@ app.post('/api/deposit', auth, async (req, res) => {
 
   res.json({ message: 'Deposit submitted. Await admin approval.' });
 
-  // Telegram notification
+  // Telegram notification via deposit bot
   try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_CHAT_ID,
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_DEPOSIT_BOT}/sendMessage`, {
+      chat_id: TELEGRAM_DEPOSIT_CHAT,
       text: `🟢 New Deposit Request
 Email: ${user.email}
 Phone: ${phone}
 Amount: KES ${amount}
-Deposit ID: ${depositRequest.id}
 MPESA Code: ${mpesaCode}
+Deposit ID: ${depositRequest.id}
 Status: PENDING`,
       reply_markup: {
         inline_keyboard: [
@@ -192,11 +195,6 @@ app.post('/api/withdraw', auth, async (req, res) => {
 
   const user = await getUserByEmail(req.user.email);
   if (!user) return res.status(400).json({ error: 'User not found' });
-
-  const deposits = await storage.getItem('deposits') || [];
-  const approved = deposits.find(d => d.email === user.email && d.status === 'APPROVED');
-  if (!approved) return res.status(400).json({ error: 'No approved deposit found' });
-  if (approved.phone !== phone) return res.status(403).json({ error: 'Withdrawals allowed only from the deposit phone' });
   if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
   const withdrawals = await storage.getItem('withdrawals') || [];
@@ -206,14 +204,15 @@ app.post('/api/withdraw', auth, async (req, res) => {
 
   res.json({ message: 'Withdrawal submitted. Await admin approval.' });
 
-  // Telegram notification
+  // Telegram notification via withdraw bot
   try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_CHAT_ID,
-      text: `🟡 New Withdrawal Request
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_WITHDRAW_BOT}/sendMessage`, {
+      chat_id: TELEGRAM_WITHDRAW_CHAT,
+      text: `🔵 New Withdrawal Request
 Email: ${user.email}
-Phone: ${phone}
+Phone: ${phone}  <-- copy this
 Amount: KES ${amount}
+Balance: KES ${user.balance}
 Withdrawal ID: ${request.id}
 Status: PENDING`,
       reply_markup: {
@@ -298,11 +297,11 @@ app.post('/api/buy', auth, async (req, res) => {
   user.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
   await saveUser(user);
 
-  res.json({ message: 'Bought ' + item.name, balance: user.balance });
+  res.json({ message: `Bought ${item.name}`, balance: user.balance });
 });
 
 // Status
-app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL }));
+app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
 
 // Start server
-app.listen(PORT, () => console.log(`Bitfreeze server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Bitfreeze server running on ${PORT}`));
