@@ -33,6 +33,16 @@ const FRIDGES = [
   { id: '12ft', name: '12 ft Fridge', price: 8000, dailyEarn: 350, img: 'images/fridge12ft.jpg' },
 ];
 
+// Referral rules
+const REFERRAL_RULES = [
+  { min: 8000, reward: 500 },
+  { min: 6000, reward: 350 },
+  { min: 4000, reward: 250 },
+  { min: 2000, reward: 150 },
+  { min: 1000, reward: 100 },
+  { min: 500,  reward: 50  },
+];
+
 app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -43,23 +53,32 @@ app.use(express.static(path.join(__dirname, 'public')));
   if (!await storage.getItem('users')) await storage.setItem('users', []);
   if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
   if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
+  if (!await storage.getItem('referralRewards')) await storage.setItem('referralRewards', []);
   console.log('Storage initialized.');
 })();
 
-// Helper functions
+// Helpers
 async function getUsers(){ return (await storage.getItem('users')) || []; }
 async function saveUsers(u){ await storage.setItem('users', u); }
 async function findUser(email){ return (await getUsers()).find(x=>x.email===email); }
-async function saveUser(user){ const u=await getUsers(); const i=u.findIndex(x=>x.email===user.email); if(i>-1) u[i]=user; else u.push(user); await saveUsers(u); }
-
-// Auth middleware
-function auth(req,res,next){ 
-  const a=req.headers.authorization; 
-  if(!a||!a.startsWith('Bearer ')) return res.status(401).json({error:'Unauthorized'}); 
-  try{ req.user=jwt.verify(a.slice(7),SECRET); next(); }catch{ return res.status(401).json({error:'Invalid token'});} 
+async function saveUser(user){ 
+  const u = await getUsers(); 
+  const i = u.findIndex(x=>x.email===user.email); 
+  if(i>-1) u[i]=user; else u.push(user); 
+  await saveUsers(u); 
+}
+async function saveReferralReward(reward){
+  const list = await storage.getItem('referralRewards') || [];
+  list.push(reward);
+  await storage.setItem('referralRewards', list);
 }
 
-// Telegram helper
+function auth(req,res,next){ 
+  const a = req.headers.authorization; 
+  if(!a||!a.startsWith('Bearer ')) return res.status(401).json({error:'Unauthorized'}); 
+  try{ req.user = jwt.verify(a.slice(7),SECRET); next(); } catch { return res.status(401).json({error:'Invalid token'}); }
+}
+
 async function tgSend(text, buttons){
   if(!TG_BOT || !TG_CHAT) return;
   const body = { chat_id: TG_CHAT, text, parse_mode:'HTML' };
@@ -67,6 +86,14 @@ async function tgSend(text, buttons){
   await fetch(`https://api.telegram.org/bot${TG_BOT}/sendMessage`,{
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
   }).catch(e=>console.error('TG send error',e));
+}
+
+// Calculate referral reward based on deposit
+function calculateReferralReward(amount){
+  for(const rule of REFERRAL_RULES){
+    if(amount >= rule.min) return rule.reward;
+  }
+  return 0;
 }
 
 // ========== API ==========
@@ -78,9 +105,8 @@ app.post('/api/register', async (req,res)=>{
   const users = await getUsers();
   if(users.find(u=>u.email===email)) return res.status(400).json({error:'User exists'});
   const hashed = await bcrypt.hash(password,10);
-  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now() };
+  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], referrer: ref||null, createdAt:Date.now() };
   users.push(user); await saveUsers(users);
-  if(ref){ const inv=users.find(u=>u.email===String(ref)); if(inv){ inv.referrals.push({email,createdAt:Date.now()}); await saveUsers(users); } }
   res.json({message:'Registered', email});
 });
 
@@ -90,7 +116,7 @@ app.post('/api/login', async (req,res)=>{
   const user = await findUser(email); if(!user) return res.status(400).json({error:'Invalid'});
   const ok = await bcrypt.compare(password,user.password); if(!ok) return res.status(400).json({error:'Invalid'});
   const token = jwt.sign({email:user.email}, SECRET, {expiresIn:'7d'});
-  res.json({ token, email:user.email, phone:user.phone, balance:user.balance, whatsapp:'https://whatsapp.com/channel/0029VbBH6VX5PO10Jf9u1g04' });
+  res.json({ token, email:user.email, phone:user.phone, balance:user.balance });
 });
 
 // Fridges
@@ -99,7 +125,7 @@ app.get('/api/fridges',(req,res)=>res.json({fridges:FRIDGES}));
 // Profile
 app.get('/api/me', auth, async (req,res)=>{
   const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'Not found'});
-  res.json({ user:{ email:u.email, phone:u.phone, balance:u.balance, fridges:u.fridges, referrals:u.referrals, whatsapp:'https://whatsapp.com/channel/0029VbBH6VX5PO10Jf9u1g04' } });
+  res.json({ user:{ email:u.email, phone:u.phone, balance:u.balance, fridges:u.fridges, referrals:u.referrals } });
 });
 
 // Deposit
@@ -112,7 +138,7 @@ app.post('/api/deposit', auth, async (req,res)=>{
   deposits.push(d); await storage.setItem('deposits',deposits);
   res.json({message:'Deposit submitted'});
 
-  const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${d.id}\nStatus: PENDING`;
+  const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nDeposit ID: ${d.id}\nStatus: PENDING`;
   const buttons = [[
     { text:'✅ Approve', url:`${DOMAIN}/api/admin/deposits/${d.id}/approve?token=${ADMIN_PASS}` },
     { text:'❌ Reject', url:`${DOMAIN}/api/admin/deposits/${d.id}/reject?token=${ADMIN_PASS}` }
@@ -132,7 +158,7 @@ app.post('/api/withdraw', auth, async (req,res)=>{
   withdrawals.push(w); await storage.setItem('withdrawals',withdrawals);
   res.json({message:'Withdrawal submitted'});
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone} (copy easily)\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
     { text:'✅ Approve', url:`${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text:'❌ Reject', url:`${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
@@ -152,7 +178,29 @@ app.get('/api/admin/deposits/:id/:action', async (req,res)=>{
   d.status = action.toUpperCase()==='APPROVE'?'APPROVED':'REJECTED';
   d.processedAt = Date.now();
   await storage.setItem('deposits',deposits);
-  if(d.status==='APPROVED'){ const u=await findUser(d.email); if(u){ u.balance+=Number(d.amount); await saveUser(u);} }
+
+  if(d.status==='APPROVED'){ 
+    const u = await findUser(d.email); 
+    if(u){ 
+      u.balance += Number(d.amount); 
+      await saveUser(u);
+
+      // Referral reward
+      if(u.referrer){
+        const refUser = await findUser(u.referrer);
+        if(refUser){
+          const reward = calculateReferralReward(Number(d.amount));
+          if(reward>0){
+            refUser.balance += reward;
+            await saveUser(refUser);
+            await saveReferralReward({referrer: refUser.email, referred: u.email, amountDeposited: Number(d.amount), reward, date: Date.now(), depositId: d.id});
+            await tgSend(`💰 Referral Reward\n${refUser.email} earned KES ${reward} from ${u.email}'s deposit of KES ${d.amount}`);
+          }
+        }
+      }
+    }
+  }
+
   res.send(`Deposit ${d.status}`);
 });
 
@@ -184,39 +232,30 @@ app.post('/api/buy', auth, async (req,res)=>{
   res.json({message:`Bought ${item.name}`, balance:u.balance});
 });
 
-// =============================== DAILY EARNINGS AT 12:00 AM KENYA TIME ===============================
-async function runDailyEarnings() {
-  const users = await getUsers();
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Nairobi' }); // YYYY-MM-DD in Kenya
-
-  for (let i = 0; i < users.length; i++) {
-    const u = users[i];
-    if (u.lastPaid === today) continue; // already paid today
-
-    let earn = 0;
-    for (let j = 0; j < u.fridges.length; j++) {
-      const fridge = FRIDGES.find(f => f.id === u.fridges[j].id);
-      if (fridge) earn += fridge.dailyEarn;
-    }
-
-    if (earn > 0) {
-      u.balance += earn;
-      u.lastPaid = today;
-      users[i] = u;
-    }
-  }
-
-  await saveUsers(users);
-}
-
-// Run daily earnings every day at 12:00 AM Kenya time
-setInterval(async () => {
+// Auto daily earnings at 12:00 AM Kenya Time
+setInterval(async ()=>{
   const now = new Date();
-  const kenyaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
-  if (kenyaTime.getHours() === 0 && kenyaTime.getMinutes() === 0) {
-    await runDailyEarnings();
+  const kenyaOffset = 3 * 60; // UTC+3 in minutes
+  const utcMinutes = now.getUTCMinutes() + now.getUTCHours()*60;
+  const kenyaMinutes = utcMinutes + kenyaOffset;
+  const hours = Math.floor(kenyaMinutes/60)%24;
+  const minutes = kenyaMinutes%60;
+  if(hours===0 && minutes<5){ // run once between 00:00-00:04
+    const users = await getUsers();
+    for(const u of users){
+      let earnedToday = 0;
+      for(const f of u.fridges){
+        const fridge = FRIDGES.find(fr=>fr.id===f.id);
+        if(fridge) earnedToday += fridge.dailyEarn;
+      }
+      if(earnedToday>0){
+        u.balance += earnedToday;
+        await saveUser(u);
+      }
+    }
+    console.log('✅ Daily earnings updated (Kenya time)');
   }
-}, 60 * 1000); // check every minute
+}, 60*1000); // check every 1 minute
 
 // Status
 app.get('/api/status',(req,res)=>res.json({status:'ok', time:Date.now(), till:MPESA_TILL, name:MPESA_NAME}));
