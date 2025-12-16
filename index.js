@@ -156,7 +156,7 @@ app.post('/api/deposit', auth, async(req,res)=>{
   }
 });
 
-// Withdraw
+// Withdraw (Monday → Friday only)
 app.post('/api/withdraw', auth, async(req,res)=>{
   const { amount, phone } = req.body||{};
   if(!amount || !phone) return res.status(400).json({error:'amount & phone required'});
@@ -167,6 +167,12 @@ app.post('/api/withdraw', auth, async(req,res)=>{
 
   // Must match original deposit phone
   if(phone !== u.withdrawPhone) return res.status(400).json({error:`Withdraw allowed only to original deposit phone ${u.withdrawPhone}`});
+
+  // Withdrawals allowed Monday → Friday
+  const day = new Date().toLocaleString('en-US', { weekday:'long', timeZone:'Africa/Nairobi' });
+  if(day==='Saturday' || day==='Sunday'){
+    return res.status(400).json({error:'Withdrawals are allowed only Monday to Friday'});
+  }
 
   if(u.balance < Number(amount)) return res.status(400).json({error:'Insufficient balance'});
 
