@@ -33,7 +33,7 @@ const FRIDGES = [
   { id: '12ft', name: '12 ft Fridge', price: 8000, dailyEarn: 350, img: 'images/fridge12ft.jpg' },
 ];
 
-// Referral reward rules
+// Referral rules
 const REFERRAL_RULES = [
   { min: 8000, reward: 500 },
   { min: 6000, reward: 350 },
@@ -66,7 +66,7 @@ async function saveUser(user){ const u=await getUsers(); const i=u.findIndex(x=>
 function auth(req,res,next){ 
   const a=req.headers.authorization; 
   if(!a||!a.startsWith('Bearer ')) return res.status(401).json({error:'Unauthorized'}); 
-  try{ req.user=jwt.verify(a.slice(7),SECRET); next(); }catch{ return res.status(401).json({error:'Invalid token'});} 
+  try{ req.user=jwt.verify(a.slice(7),SECRET); next();}catch{ return res.status(401).json({error:'Invalid token'});} 
 }
 
 // Telegram helper
@@ -88,8 +88,18 @@ app.post('/api/register', async (req,res)=>{
   const users = await getUsers();
   if(users.find(u=>u.email===email)) return res.status(400).json({error:'User exists'});
   const hashed = await bcrypt.hash(password,10);
-  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now(), referrer: ref||null };
+  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now(), lastPaid:null };
   users.push(user); await saveUsers(users);
+  
+  // Referral reward if ref exists
+  if(ref){ 
+    const inv=users.find(u=>u.email===String(ref)); 
+    if(inv){ 
+      inv.referrals.push({email,createdAt:Date.now()}); 
+      await saveUsers(users); 
+    } 
+  }
+
   res.json({message:'Registered', email});
 });
 
@@ -107,23 +117,8 @@ app.get('/api/fridges',(req,res)=>res.json({fridges:FRIDGES}));
 
 // Profile
 app.get('/api/me', auth, async (req,res)=>{
-  const u = await findUser(req.user.email); 
-  if(!u) return res.status(404).json({error:'Not found'});
-
-  // Merge fridge info with catalog
-  const userFridges = u.fridges.map(f=>{
-    const catalog = FRIDGES.find(cf=>cf.id===f.id);
-    return catalog ? {...f, img: catalog.img, dailyEarn: catalog.dailyEarn} : f;
-  });
-
-  res.json({ user:{
-    email: u.email,
-    phone: u.phone,
-    balance: u.balance,
-    fridges: userFridges,
-    referrals: u.referrals,
-    whatsapp:'https://whatsapp.com/channel/0029VbBH6VX5PO10Jf9u1g04'
-  } });
+  const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'Not found'});
+  res.json({ user:{ email:u.email, phone:u.phone, balance:u.balance, fridges:u.fridges, referrals:u.referrals, whatsapp:'https://whatsapp.com/channel/0029VbBH6VX5PO10Jf9u1g04' } });
 });
 
 // Deposit
@@ -136,26 +131,24 @@ app.post('/api/deposit', auth, async (req,res)=>{
   deposits.push(d); await storage.setItem('deposits',deposits);
   res.json({message:'Deposit submitted'});
 
-  // Referral reward
-  if(u.referrer){
-    const refUser = await findUser(u.referrer);
-    if(refUser){
-      for(const rule of REFERRAL_RULES){
-        if(Number(amount) >= rule.min){
-          refUser.balance += rule.reward;
-          await saveUser(refUser);
-          break;
-        }
-      }
-    }
-  }
-
   const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${d.id}\nStatus: PENDING`;
   const buttons = [[
     { text:'✅ Approve', url:`${DOMAIN}/api/admin/deposits/${d.id}/approve?token=${ADMIN_PASS}` },
     { text:'❌ Reject', url:`${DOMAIN}/api/admin/deposits/${d.id}/reject?token=${ADMIN_PASS}` }
   ]];
   await tgSend(text, buttons);
+
+  // Apply referral reward if deposit qualifies
+  if(u.referrer){
+    const referrer = await findUser(u.referrer);
+    if(referrer){
+      const rule = REFERRAL_RULES.find(r=>Number(amount)>=r.min);
+      if(rule){
+        referrer.balance += rule.reward;
+        await saveUser(referrer);
+      }
+    }
+  }
 });
 
 // Withdraw
@@ -217,39 +210,41 @@ app.post('/api/buy', auth, async (req,res)=>{
   const item=FRIDGES.find(f=>f.id===fridgeId); if(!item) return res.status(400).json({error:'Invalid fridge'});
   const u=await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
   if(u.balance < item.price) return res.status(400).json({error:'Insufficient balance'});
-  u.balance -= item.price; 
-  u.fridges.push({id:item.id, boughtAt:Date.now()});
+  u.balance -= item.price; u.fridges.push({id:item.id,name:item.name,price:item.price,boughtAt:Date.now()});
   await saveUser(u);
   res.json({message:`Bought ${item.name}`, balance:u.balance});
 });
 
-// ===== Daily earnings 12:00 AM Kenya time =====
-const KENYA_OFFSET = 3 * 60; // UTC+3 in minutes
-async function runDailyEarnings(){
+// =============================== DAILY EARNINGS (KENYA TIME) ===============================
+
+const KENYA_OFFSET = 3 * 60; // UTC+3
+
+async function runDailyEarnings() {
   const users = await getUsers();
-  const today = new Date(Date.now() + KENYA_OFFSET*60000).toISOString().slice(0,10);
-  for(const u of users){
-    if(u.lastPaid===today) continue;
+  const now = new Date();
+  const kenyaTime = new Date(now.getTime() + KENYA_OFFSET*60*1000);
+  const todayStr = kenyaTime.toISOString().slice(0,10);
+
+  for (const u of users) {
+    if (u.lastPaid === todayStr) continue;
+
     let earn = 0;
-    for(const f of u.fridges){
-      const fridge = FRIDGES.find(fr=>fr.id===f.id);
-      if(fridge) earn += fridge.dailyEarn;
+    for (const f of u.fridges) {
+      const fridge = FRIDGES.find(fr => fr.id === f.id);
+      if (fridge) earn += fridge.dailyEarn;
     }
-    if(earn>0){
+
+    if (earn > 0) {
       u.balance += earn;
-      u.lastPaid = today;
-      await saveUser(u);
+      u.lastPaid = todayStr;
     }
   }
+
+  await saveUsers(users);
 }
 
-// Check every minute if it’s 12:00 AM Kenya time
-setInterval(async ()=>{
-  const now = new Date(Date.now() + KENYA_OFFSET*60000);
-  if(now.getHours()===0 && now.getMinutes()===0){
-    await runDailyEarnings();
-  }
-}, 60*1000);
+// Run every 5 minutes, but credit only once per Kenya day
+setInterval(runDailyEarnings, 5*60*1000);
 
 // Status
 app.get('/api/status',(req,res)=>res.json({status:'ok', time:Date.now(), till:MPESA_TILL, name:MPESA_NAME}));
