@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const storage = require('node-persist');
+const mongoose = require('mongoose');
 const path = require('path');
 const crypto = require('crypto');
 const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
@@ -47,26 +47,52 @@ app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize storage
-(async () => {
-  await storage.init({ dir: path.join(__dirname, 'persist'), forgiveParseErrors: true });
-  if (!await storage.getItem('users')) await storage.setItem('users', []);
-  if (!await storage.getItem('deposits')) await storage.setItem('deposits', []);
-  if (!await storage.getItem('withdrawals')) await storage.setItem('withdrawals', []);
-  console.log('Storage initialized.');
-})();
+// =================== MONGODB SETUP ===================
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bitfreeze';
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(()=>console.log('MongoDB connected'))
+  .catch(err=>console.error('MongoDB connection error:', err));
 
-// Helper functions
-async function getUsers(){ return (await storage.getItem('users')) || []; }
-async function saveUsers(u){ await storage.setItem('users', u); }
-async function findUser(email){ return (await getUsers()).find(x=>x.email===email); }
-async function saveUser(user){
-  const u = await getUsers();
-  const i = u.findIndex(x=>x.email===user.email);
-  if(i>-1) u[i]=user;
-  else u.push(user);
-  await saveUsers(u);
-}
+const userSchema = new mongoose.Schema({
+  email: String,
+  password: String,
+  phone: String,
+  balance: { type: Number, default: 0 },
+  fridges: Array,
+  referrals: Array,
+  createdAt: Date,
+  withdrawPhone: String,
+  referredBy: String,
+  lastPaid: String
+});
+
+const depositSchema = new mongoose.Schema({
+  email: String,
+  phone: String,
+  amount: Number,
+  mpesaCode: String,
+  status: { type: String, default: 'PENDING' },
+  requestedAt: Date,
+  processedAt: Date
+});
+
+const withdrawalSchema = new mongoose.Schema({
+  email: String,
+  phone: String,
+  amount: Number,
+  status: { type: String, default: 'PENDING' },
+  requestedAt: Date,
+  processedAt: Date
+});
+
+const User = mongoose.model('User', userSchema);
+const Deposit = mongoose.model('Deposit', depositSchema);
+const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
+
+// =================== HELPERS ===================
+async function getUsers(){ return await User.find(); }
+async function findUser(email){ return await User.findOne({email}); }
+async function saveUser(user){ await user.save(); }
 
 // Auth middleware
 function auth(req,res,next){
@@ -85,17 +111,17 @@ async function tgSend(text, buttons){
   }).catch(e=>console.error('TG send error',e));
 }
 
-// ========== API ==========
+// =================== API ROUTES ===================
 
 // Register
 app.post('/api/register', async (req,res)=>{
   const { email,password,phone,ref } = req.body||{};
   if(!email||!password) return res.status(400).json({error:'Email & password required'});
-  const users = await getUsers();
-  if(users.find(u=>u.email===email)) return res.status(400).json({error:'User exists'});
+  const exists = await findUser(email);
+  if(exists) return res.status(400).json({error:'User exists'});
   const hashed = await bcrypt.hash(password,10);
-  const user = { email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:Date.now(), withdrawPhone:null, referredBy:ref||null };
-  users.push(user); await saveUsers(users);
+  const user = new User({ email, password: hashed, phone: phone||null, balance:0, fridges:[], referrals:[], createdAt:new Date(), withdrawPhone:null, referredBy:ref||null });
+  await user.save();
   res.json({message:'Registered', email});
 });
 
@@ -123,19 +149,20 @@ app.post('/api/deposit', auth, async(req,res)=>{
   if(!amount || !mpesaCode || !phone) return res.status(400).json({error:'amount, mpesaCode, phone required'});
   const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
 
+  const pending = await Deposit.findOne({email:u.email, status:'PENDING'});
+  if(pending) return res.status(400).json({error:'You already have a pending deposit. Please wait for it to be approved/rejected.'});
+
   if(!u.withdrawPhone) u.withdrawPhone = phone;
 
-  const deposits = (await storage.getItem('deposits'))||[];
-  const d = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), mpesaCode, status:'PENDING', requestedAt:Date.now() };
-  deposits.push(d);
-  await storage.setItem('deposits', deposits);
+  const d = new Deposit({ email:u.email, phone, amount:Number(amount), mpesaCode, requestedAt: new Date() });
+  await d.save();
   await saveUser(u);
   res.json({message:'Deposit submitted'});
 
-  const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${d.id}\nStatus: PENDING`;
+  const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${d._id}\nStatus: PENDING`;
   const buttons = [[
-    { text:'✅ Approve', url:`${DOMAIN}/api/admin/deposits/${d.id}/approve?token=${ADMIN_PASS}` },
-    { text:'❌ Reject', url:`${DOMAIN}/api/admin/deposits/${d.id}/reject?token=${ADMIN_PASS}` }
+    { text:'✅ Approve', url:`${DOMAIN}/api/admin/deposits/${d._id}/approve?token=${ADMIN_PASS}` },
+    { text:'❌ Reject', url:`${DOMAIN}/api/admin/deposits/${d._id}/reject?token=${ADMIN_PASS}` }
   ]];
   await tgSend(text,buttons);
 
@@ -154,32 +181,30 @@ app.post('/api/deposit', auth, async(req,res)=>{
   }
 });
 
-// Withdraw (Monday → Friday only)
+// Withdraw
 app.post('/api/withdraw', auth, async(req,res)=>{
   const { amount, phone } = req.body||{};
   if(!amount || !phone) return res.status(400).json({error:'amount & phone required'});
   const u = await findUser(req.user.email); if(!u) return res.status(404).json({error:'User not found'});
-
   if(!u.withdrawPhone) return res.status(400).json({error:'Cannot withdraw before making a deposit'});
   if(phone !== u.withdrawPhone) return res.status(400).json({error:`Withdraw allowed only to original deposit phone ${u.withdrawPhone}`});
 
   const day = new Date().toLocaleString('en-US', { weekday:'long', timeZone:'Africa/Nairobi' });
-  if(day==='Saturday' || day==='Sunday'){
-    return res.status(400).json({error:'Withdrawals are allowed only Monday to Friday'});
-  }
-
+  if(day==='Saturday' || day==='Sunday') return res.status(400).json({error:'Withdrawals are allowed only Monday to Friday'});
   if(u.balance < Number(amount)) return res.status(400).json({error:'Insufficient balance'});
 
-  const withdrawals = (await storage.getItem('withdrawals'))||[];
-  const w = { id: crypto.randomUUID(), email:u.email, phone, amount:Number(amount), status:'PENDING', requestedAt:Date.now() };
-  withdrawals.push(w);
-  await storage.setItem('withdrawals',withdrawals);
+  const pending = await Withdrawal.findOne({email:u.email, status:'PENDING'});
+  if(pending) return res.status(400).json({error:'You already have a pending withdrawal. Please wait for it to be approved/rejected.'});
+
+  const w = new Withdrawal({ email:u.email, phone, amount:Number(amount), requestedAt: new Date() });
+  await w.save();
+
   res.json({message:'Withdrawal submitted'});
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w._id}\nStatus: PENDING`;
   const buttons = [[
-    { text:'✅ Approve', url:`${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
-    { text:'❌ Reject', url:`${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
+    { text:'✅ Approve', url:`${DOMAIN}/api/admin/withdrawals/${w._id}/approve?token=${ADMIN_PASS}` },
+    { text:'❌ Reject', url:`${DOMAIN}/api/admin/withdrawals/${w._id}/reject?token=${ADMIN_PASS}` }
   ]];
   await tgSend(text,buttons);
 });
@@ -189,14 +214,12 @@ app.get('/api/admin/deposits/:id/:action', async (req,res)=>{
   const { id, action } = req.params;
   const token = req.query.token;
   if(token!==ADMIN_PASS) return res.status(401).send('Unauthorized');
-  const deposits = await storage.getItem('deposits')||[];
-  const d = deposits.find(x=>x.id===id);
-  if(!d) return res.status(404).send('Deposit not found');
+  const d = await Deposit.findById(id); if(!d) return res.status(404).send('Deposit not found');
   if(d.status!=='PENDING') return res.status(400).send('Deposit already processed');
   d.status = action.toUpperCase()==='APPROVE'?'APPROVED':'REJECTED';
-  d.processedAt = Date.now();
-  await storage.setItem('deposits',deposits);
-  if(d.status==='APPROVED'){ const u=await findUser(d.email); if(u){ u.balance+=Number(d.amount); await saveUser(u);} }
+  d.processedAt = new Date();
+  await d.save();
+  if(d.status==='APPROVED'){ const u = await findUser(d.email); if(u){ u.balance += d.amount; await saveUser(u);} }
   res.send(`Deposit ${d.status}`);
 });
 
@@ -205,14 +228,12 @@ app.get('/api/admin/withdrawals/:id/:action', async (req,res)=>{
   const { id, action } = req.params;
   const token = req.query.token;
   if(token!==ADMIN_PASS) return res.status(401).send('Unauthorized');
-  const withdrawals = await storage.getItem('withdrawals')||[];
-  const w = withdrawals.find(x=>x.id===id);
-  if(!w) return res.status(404).send('Withdrawal not found');
+  const w = await Withdrawal.findById(id); if(!w) return res.status(404).send('Withdrawal not found');
   if(w.status!=='PENDING') return res.status(400).send('Withdrawal already processed');
   w.status = action.toUpperCase()==='APPROVE'?'APPROVED':'REJECTED';
-  w.processedAt = Date.now();
-  await storage.setItem('withdrawals',withdrawals);
-  if(w.status==='APPROVED'){ const u=await findUser(w.email); if(u){ u.balance-=Number(w.amount); await saveUser(u);} }
+  w.processedAt = new Date();
+  await w.save();
+  if(w.status==='APPROVED'){ const u = await findUser(w.email); if(u){ u.balance -= w.amount; await saveUser(u);} }
   res.send(`Withdrawal ${w.status}`);
 });
 
@@ -228,9 +249,9 @@ app.post('/api/buy', auth, async (req,res)=>{
   res.json({message:`Bought ${item.name}`, balance:u.balance});
 });
 
-// =============================== DAILY EARNINGS AT 12:00 AM KENYA ===============================
+// =================== DAILY EARNINGS ===================
 async function runDailyEarnings(){
-  const users = await getUsers();
+  const users = await User.find();
   const today = new Date().toLocaleDateString('en-GB', { timeZone:'Africa/Nairobi' });
   for(const u of users){
     if(u.lastPaid===today) continue;
@@ -242,25 +263,28 @@ async function runDailyEarnings(){
     if(earn>0){
       u.balance += earn;
       u.lastPaid = today;
-      console.log(`User ${u.email} earned KES ${earn} today. New balance: ${u.balance}`);
+      await saveUser(u);
+      console.log(`User ${u.email} earned KES ${earn}. New balance: ${u.balance}`);
     }
   }
-  await saveUsers(users);
 }
 
-// Check every minute if it's 12:00 AM Nairobi time
-setInterval(async () => {
+// Check every minute if it's 12:00 AM Nairobi
+setInterval(async()=>{
   const now = new Date();
-  const hours = Number(now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' }));
-  const minutes = Number(now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' }));
-  if (hours === 0 && minutes === 0) {
-    console.log('Running daily earnings...');
-    await runDailyEarnings();
-  }
-}, 60_000); // every 60 seconds
+  const hours = Number(now.toLocaleString('en-US', { hour12:false, hour:'2-digit', timeZone:'Africa/Nairobi' }));
+  const minutes = Number(now.toLocaleString('en-US', { minute:'2-digit', timeZone:'Africa/Nairobi' }));
+  if(hours===0 && minutes===0) await runDailyEarnings();
+}, 60_000);
 
 // Status
 app.get('/api/status',(req,res)=>res.json({status:'ok', time:Date.now(), till:MPESA_TILL, name:MPESA_NAME}));
+
+// TEST ROUTE (optional, remove in production)
+app.get('/api/test-daily', async (req,res) => {
+  await runDailyEarnings();
+  res.json({message:'Daily earnings processed (test run)'});
+});
 
 // Start server
 app.listen(PORT,()=>console.log(`Bitfreeze running on ${PORT}`));
