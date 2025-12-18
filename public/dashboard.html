@@ -30,10 +30,11 @@ button { background: linear-gradient(90deg,var(--accent),#ffb347); color:#111; f
 .fridge { background: var(--glass); border-radius:10px; padding:10px; display:flex; flex-direction:column; align-items:center; text-align:center; }
 .fridge img { width:100%; height:150px; border-radius:8px; object-fit:cover; margin-bottom:8px; }
 .fridge-info strong { display:block; margin-bottom:4px; }
-.balance-box { display:flex; gap:12px; margin-top:10px; }
-.balance-box div { flex:1; background: var(--glass); padding:10px; border-radius:8px; text-align:center; }
-.balance-box div p { margin:4px 0; font-size:14px; }
 @media(max-width:600px){.fridge img{height:120px;}}
+.balance-container { display:flex; gap:20px; flex-wrap: wrap; margin-top:10px; }
+.balance-box { flex:1; background: var(--glass); border-radius:10px; padding:10px; text-align:center; }
+.balance-box h3 { margin:0 0 10px 0; color:#fff; font-size:16px; }
+.balance-box p { margin:0; font-size:20px; font-weight:700; color: var(--accent); }
 </style>
 </head>
 <body>
@@ -44,14 +45,14 @@ button { background: linear-gradient(90deg,var(--accent),#ffb347); color:#111; f
     <h2>Your Account</h2>
     <p>Email: <span id="userEmail"></span></p>
     <p>Phone: <span id="userPhone"></span></p>
-    <div class="balance-box">
-      <div>
-        <p>Total Balance</p>
-        <strong>KES <span id="userBalance">0</span></strong>
+    <div class="balance-container">
+      <div class="balance-box">
+        <h3>Deposit Balance</h3>
+        <p>KES <span id="userBalance">0</span></p>
       </div>
-      <div>
-        <p>Earnings Balance</p>
-        <strong>KES <span id="userEarnings">0</span></strong>
+      <div class="balance-box">
+        <h3>Earnings</h3>
+        <p>KES <span id="userEarning">0</span></p>
       </div>
     </div>
     <p>Fridges owned: <span id="userFridges">0</span></p>
@@ -67,7 +68,7 @@ button { background: linear-gradient(90deg,var(--accent),#ffb347); color:#111; f
       <label for="depositPhone">Phone</label>
       <input type="text" id="depositPhone" placeholder="0707xxxxxx" required>
       <label for="depositAmount">Amount (KES)</label>
-      <input type="number" id="depositAmount" min="1" required>
+      <input type="number" id="depositAmount" min="500" required>
       <label for="depositCode">MPESA Transaction Code</label>
       <input type="text" id="depositCode" placeholder="TLDON120DP" required>
       <button type="submit">Submit Deposit</button>
@@ -83,7 +84,7 @@ button { background: linear-gradient(90deg,var(--accent),#ffb347); color:#111; f
 
   <!-- Withdraw -->
   <div class="card">
-    <h2>Withdraw</h2>
+    <h2>Withdraw Earnings</h2>
     <form id="withdrawForm">
       <label for="withdrawPhone">Phone</label>
       <input type="text" id="withdrawPhone" placeholder="0707xxxxxx" required>
@@ -101,7 +102,6 @@ const DOMAIN = 'https://bitfreeze-production.up.railway.app';
 const token = localStorage.getItem('bf_token');
 if(!token) location.href = '/login.html';
 
-// Get user info and update balances
 async function getUser() {
   const res = await fetch(DOMAIN+'/api/me',{ headers:{'Authorization':'Bearer '+token}});
   const data = await res.json();
@@ -109,8 +109,7 @@ async function getUser() {
     document.getElementById('userEmail').textContent = data.user.email;
     document.getElementById('userPhone').textContent = data.user.phone || '—';
     document.getElementById('userBalance').textContent = data.user.balance;
-    const earnings = Math.max(data.user.balance - (data.user.lockedBonus || 0),0);
-    document.getElementById('userEarnings').textContent = earnings;
+    document.getElementById('userEarning').textContent = data.user.earning;
     document.getElementById('userFridges').textContent = data.user.fridges.length;
     const ref = encodeURIComponent(data.user.email);
     document.getElementById('refLink').textContent = DOMAIN+'/register.html?ref='+ref;
@@ -136,46 +135,26 @@ document.getElementById('depositForm').addEventListener('submit', async e=>{
       body: JSON.stringify({phone, amount, mpesaCode: code})
     });
     const data = await res.json();
-    if(res.ok){ 
-      msgEl.textContent=data.message; msgEl.className='success';
-      getUser(); // refresh balance immediately
-    } else { 
-      msgEl.textContent=data.error||'Deposit failed'; msgEl.className='error'; 
-    }
+    if(res.ok){ msgEl.textContent=data.message; msgEl.className='success'; }
+    else { msgEl.textContent=data.error||'Deposit failed'; msgEl.className='error'; }
   } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
 });
 
-// Withdraw only from earnings
+// Withdraw
 document.getElementById('withdrawForm').addEventListener('submit', async e=>{
   e.preventDefault();
   const phone = document.getElementById('withdrawPhone').value.trim();
-  let amount = Number(document.getElementById('withdrawAmount').value.trim());
+  const amount = Number(document.getElementById('withdrawAmount').value.trim());
   const msgEl = document.getElementById('withdrawMsg');
   msgEl.textContent=''; msgEl.className='';
-
   try {
-    const resUser = await fetch(DOMAIN+'/api/me',{ headers:{'Authorization':'Bearer '+token}});
-    const dataUser = await resUser.json();
-    if(!dataUser.user) return logout();
-    const locked = dataUser.user.lockedBonus || 0;
-    const earnings = Math.max(dataUser.user.balance - locked, 0);
-
-    if(amount > earnings){
-      msgEl.textContent = `You can only withdraw up to your earnings balance: KES ${earnings}`;
-      msgEl.className='error';
-      return;
-    }
-
     const res = await fetch(DOMAIN+'/api/withdraw',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
       body: JSON.stringify({phone, amount})
     });
     const data = await res.json();
-    if(res.ok){ 
-      msgEl.textContent=data.message; msgEl.className='success';
-      getUser(); // refresh balance
-    }
+    if(res.ok){ msgEl.textContent=data.message; msgEl.className='success'; getUser(); }
     else { msgEl.textContent=data.error||'Withdraw failed'; msgEl.className='error'; }
   } catch(err){ msgEl.textContent='Network error: '+err.message; msgEl.className='error'; }
 });
