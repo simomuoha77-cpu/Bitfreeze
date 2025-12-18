@@ -59,8 +59,8 @@ const userSchema = new mongoose.Schema({
   email: String,
   password: String,
   phone: String,
-  balance: { type: Number, default: 0 },
-  lockedBonus: { type: Number, default: 0 },
+  depositBalance: { type: Number, default: 0 }, // cannot withdraw
+  earningBalance: { type: Number, default: 0 }, // can withdraw
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
   createdAt: { type: Date, default: Date.now },
@@ -126,8 +126,8 @@ app.post('/api/register', async (req, res) => {
     email, 
     password: hashed, 
     referredBy: ref,
-    balance: 200,
-    lockedBonus: 200,
+    depositBalance: 0,
+    earningBalance: 200, // registration bonus
     firstDepositMade: false
   });
 
@@ -149,7 +149,7 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ token, email: user.email, phone: user.phone, balance: user.balance });
+  res.json({ token, email: user.email, phone: user.phone, depositBalance: user.depositBalance, earningBalance: user.earningBalance });
 });
 
 // Deposit
@@ -157,9 +157,8 @@ app.post('/api/deposit', auth, async (req, res) => {
   const { amount, mpesaCode, phone } = req.body || {};
   if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'amount, mpesaCode, phone required' });
 
-  if (![500,1000,2000,4000,6000,8000].includes(Number(amount))) {
-    return res.status(400).json({ error: 'Deposit the exact amount of the fridge you want (500,1000,2000,4000,6000,8000)' });
-  }
+  if (!FRIDGES.some(f => f.price === Number(amount))) 
+    return res.status(400).json({ error: 'Deposit the exact amount of the fridge you want' });
 
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
@@ -205,12 +204,9 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   if (deposit.status === 'APPROVED') {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
-      u.balance += Number(deposit.amount);
-      if (!u.firstDepositMade && deposit.amount >= 500) {
-        u.firstDepositMade = true;
-        u.lockedBonus = 0;
-      }
-      await u.save(); // <-- always save balance!
+      u.depositBalance += Number(deposit.amount); // add to depositBalance
+      if (!u.firstDepositMade && deposit.amount >= 500) u.firstDepositMade = true;
+      await u.save();
     }
   }
 
@@ -225,9 +221,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  // Cannot withdraw deposit, only earnings
-  const withdrawable = u.balance - u.lockedBonus;
-  if (withdrawable < Number(amount)) return res.status(400).json({ error: 'Insufficient withdrawable balance' });
+  if (u.earningBalance < Number(amount)) return res.status(400).json({ error: 'Insufficient withdrawable balance (earnings only)' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending withdrawal' });
@@ -242,7 +236,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
   });
   await w.save();
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nBalance: KES ${u.balance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nWithdrawable: KES ${u.earningBalance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
     { text: '✅ Approve', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text: '❌ Reject', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
@@ -269,7 +263,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   if (w.status === 'APPROVED') {
     const u = await User.findOne({ email: w.email });
     if (u) {
-      u.balance -= Number(w.amount);
+      u.earningBalance -= Number(w.amount); // reduce earnings only
       await u.save();
     }
   }
@@ -277,7 +271,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   res.send(`Withdrawal ${w.status}`);
 });
 
-// Daily earnings 12:00 AM Nairobi
+// Daily earnings
 async function runDailyEarnings() {
   const users = await User.find();
   const today = new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Nairobi' });
@@ -289,7 +283,7 @@ async function runDailyEarnings() {
       if (fridge) earn += fridge.dailyEarn;
     }
     if (earn > 0) {
-      u.balance += earn;
+      u.earningBalance += earn;
       u.lastPaid = today;
       await u.save();
     }
@@ -314,13 +308,27 @@ app.post('/api/buy', auth, async (req, res) => {
   const { fridgeId } = req.body || {};
   const item = FRIDGES.find(f => f.id === fridgeId);
   if (!item) return res.status(400).json({ error: 'Invalid fridge' });
+
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
-  if (u.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
-  u.balance -= item.price;
+
+  const totalBalance = u.depositBalance + u.earningBalance;
+  if (totalBalance < item.price) return res.status(400).json({ error: 'Insufficient total balance to buy fridge' });
+
+  // Deduct from deposit first
+  let remainingPrice = item.price;
+  if (u.depositBalance >= remainingPrice) {
+    u.depositBalance -= remainingPrice;
+  } else {
+    remainingPrice -= u.depositBalance;
+    u.depositBalance = 0;
+    u.earningBalance -= remainingPrice;
+  }
+
   u.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
   await u.save();
-  res.json({ message: `Bought ${item.name}`, balance: u.balance });
+
+  res.json({ message: `Bought ${item.name}`, depositBalance: u.depositBalance, earningBalance: u.earningBalance });
 });
 
 // Profile
