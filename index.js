@@ -33,10 +33,7 @@ const FRIDGES = [
   { id: '12ft', name: '12 ft Fridge', price: 8000, dailyEarn: 350, img: 'images/fridge12ft.jpg' },
 ];
 
-// Allowed deposit amounts (must match fridge prices)
-const ALLOWED_DEPOSITS = FRIDGES.map(f => f.price);
-
-// Referral rewards
+// Referral rules
 const REFERRAL_RULES = [
   { min: 8000, reward: 500 },
   { min: 6000, reward: 350 },
@@ -124,29 +121,17 @@ app.post('/api/register', async (req, res) => {
   const hashed = await bcrypt.hash(password, 10);
   const ref = referrerEmail?.trim() || undefined;
 
-  // Registration bonus 200 KES
   const user = new User({ 
     name, 
     email, 
     password: hashed, 
     referredBy: ref,
     balance: 200,
-    lockedBonus: 200,   // cannot withdraw until first deposit ≥ 500
+    lockedBonus: 200,
     firstDepositMade: false
   });
 
   await user.save();
-
-  // Add referral reward if referrer exists
-  if (ref) {
-    const refUser = await User.findOne({ email: ref });
-    if (refUser) {
-      const reward = 200; // fixed referral reward
-      refUser.balance += reward;
-      refUser.referrals.push(user.email);
-      await refUser.save();
-    }
-  }
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
   res.json({
@@ -172,13 +157,12 @@ app.post('/api/deposit', auth, async (req, res) => {
   const { amount, mpesaCode, phone } = req.body || {};
   if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'amount, mpesaCode, phone required' });
 
+  if (![500,1000,2000,4000,6000,8000].includes(Number(amount))) {
+    return res.status(400).json({ error: 'Deposit the exact amount of the fridge you want (500,1000,2000,4000,6000,8000)' });
+  }
+
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
-
-  // Check allowed deposit
-  if (!ALLOWED_DEPOSITS.includes(Number(amount))) {
-    return res.status(400).json({ error: `Deposit the exact amount of the fridge you want. Allowed: ${ALLOWED_DEPOSITS.join(', ')}` });
-  }
 
   const pending = await Deposit.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending deposit' });
@@ -225,15 +209,15 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
       if (!u.firstDepositMade && deposit.amount >= 500) {
         u.firstDepositMade = true;
         u.lockedBonus = 0;
-        await u.save();
       }
+      await u.save(); // <-- always save balance!
     }
   }
 
   res.send(`Deposit ${deposit.status}`);
 });
 
-// Withdraw (earnings only)
+// Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
@@ -241,10 +225,9 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  // Only earnings + unlocked bonus can be withdrawn
+  // Cannot withdraw deposit, only earnings
   const withdrawable = u.balance - u.lockedBonus;
-  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw before making deposit ≥ 500' });
-  if (withdrawable < Number(amount)) return res.status(400).json({ error: 'Insufficient withdrawable balance (earnings only)' });
+  if (withdrawable < Number(amount)) return res.status(400).json({ error: 'Insufficient withdrawable balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending withdrawal' });
@@ -313,13 +296,12 @@ async function runDailyEarnings() {
   }
 }
 
-// Run every ~1 hour to check for 12:00 AM Nairobi
 setInterval(async () => {
   const now = new Date();
   const hours = now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' });
   const minutes = now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' });
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
-}, 3600000); // check every hour
+}, 5601000);
 
 // Status
 app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
