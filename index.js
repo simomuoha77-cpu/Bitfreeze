@@ -328,4 +328,4 @@ app.get('/api/me', auth, async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => console.log(`Bitfreeze running on ${PORT}`));
+app.listen(PORT, () => console.log(`Bitfreeze running on ${PORT}`));o
