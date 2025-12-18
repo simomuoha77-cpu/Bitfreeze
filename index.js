@@ -61,7 +61,7 @@ const userSchema = new mongoose.Schema({
   phone: String,
   balance: { type: Number, default: 0 },
   earning: { type: Number, default: 0 },
-  lockedBonus: { type: Number, default: 0 }, // locked rewards
+  lockedBonus: { type: Number, default: 0 },
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
   referredBy: String,
@@ -114,7 +114,7 @@ async function tgSend(text, buttons) {
 
 // ===================== ROUTES =====================
 
-// Register with 200 KSH reward (locked until first deposit ≥ 500)
+// Register with instant reward
 app.post('/api/register', async (req, res) => {
   const { name, email, password, referrerEmail } = req.body || {};
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required' });
@@ -128,14 +128,14 @@ app.post('/api/register', async (req, res) => {
     password: hashed,
     referredBy: ref,
     balance: 0,
-    earning: 200,       // reward immediately
-    lockedBonus: 200,   // locked until first deposit
+    earning: 200, // Instant 200 KSH reward on registration
+    lockedBonus: 0,
     firstDepositMade: false
   });
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ message: 'Registered successfully. 200 KSH reward added (locked until first deposit)', token, email: user.email });
+  res.json({ message: 'Registered successfully! 200 KSH added to earnings (cannot withdraw before first deposit ≥ 500)', token, email: user.email });
 });
 
 // Login
@@ -149,7 +149,7 @@ app.post('/api/login', async (req, res) => {
   res.json({ token, email: user.email, phone: user.phone, balance: user.balance, earning: user.earning });
 });
 
-// Deposit
+// Deposit (any day)
 app.post('/api/deposit', auth, async (req, res) => {
   const { amount, mpesaCode, phone } = req.body || {};
   if (!amount || !mpesaCode || !phone) return res.status(400).json({ error: 'amount, mpesaCode, phone required' });
@@ -175,7 +175,7 @@ app.post('/api/deposit', auth, async (req, res) => {
   res.json({ message: 'Deposit submitted. Wait for admin approval' });
 });
 
-// Approve deposit and unlock registration reward
+// Approve deposit
 app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   const { id, action } = req.params;
   const token = req.query.token;
@@ -192,34 +192,28 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   if (deposit.status === 'APPROVED') {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
-      u.balance += Number(deposit.amount);
-
-      if (!u.firstDepositMade && deposit.amount >= 500) {
-        u.earning += u.lockedBonus; // unlock 200 KSH reward
-        u.lockedBonus = 0;
-        u.firstDepositMade = true;
-      }
-
+      u.balance += Number(deposit.amount); // deposit added to balance
+      u.firstDepositMade = true;
       await u.save();
 
-      // Referral reward
-      if (u.referredBy) {
-        const refUser = await User.findOne({ email: u.referredBy });
-        if (refUser) {
-          const rewardRule = REFERRAL_RULES.find(r => deposit.amount >= r.min);
-          if (rewardRule) {
-            refUser.earning += rewardRule.reward;
-            await refUser.save();
-          }
-        }
-      }
+      // Handle referral reward  
+      if (u.referredBy) {  
+        const refUser = await User.findOne({ email: u.referredBy });  
+        if (refUser) {  
+          const rewardRule = REFERRAL_RULES.find(r => deposit.amount >= r.min);  
+          if (rewardRule) {  
+            refUser.earning += rewardRule.reward;  
+            await refUser.save();  
+          }  
+        }  
+      }  
     }
   }
 
   res.send(`Deposit ${deposit.status}`);
 });
 
-// Withdraw (only from earnings)
+// Withdraw (Mon-Fri only, from earnings)
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
@@ -227,12 +221,13 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  // Withdrawals allowed Mon-Fri only
-  const today = new Date().getDay(); // 0=Sun, 6=Sat
-  if (today === 0 || today === 6) return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only' });
+  // Block Sat (6) & Sun (0)
+  const today = new Date().getDay();
+  if (today === 0 || today === 6) {
+    return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only 😞' });
+  }
 
-  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw until first deposit ≥ 500 KSH' });
-
+  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw before first deposit ≥ 500' });
   if (u.earning < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
@@ -251,7 +246,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
   res.json({ message: 'Withdrawal submitted' });
 });
 
-// Approve withdrawal
+// Approve withdraw
 app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   const { id, action } = req.params;
   const token = req.query.token;
@@ -300,7 +295,7 @@ setInterval(async () => {
   const hours = now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' });
   const minutes = now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' });
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
-}, 5601000);
+}, 60000);
 
 // Status
 app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
