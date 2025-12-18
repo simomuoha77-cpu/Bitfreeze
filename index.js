@@ -12,7 +12,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
-const DOMAIN = process.env.DOMAIN || 'http://localhost:3000';
+const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 
 // Telegram
@@ -61,7 +61,7 @@ const userSchema = new mongoose.Schema({
   phone: String,
   balance: { type: Number, default: 0 },
   earning: { type: Number, default: 0 },
-  lockedBonus: { type: Number, default: 0 },
+  lockedBonus: { type: Number, default: 0 }, // locked rewards
   fridges: { type: Array, default: [] },
   referrals: { type: Array, default: [] },
   referredBy: String,
@@ -99,12 +99,8 @@ const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 function auth(req, res, next) {
   const a = req.headers.authorization;
   if (!a || !a.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    req.user = jwt.verify(a.slice(7), SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
+  try { req.user = jwt.verify(a.slice(7), SECRET); next(); } 
+  catch { return res.status(401).json({ error: 'Invalid token' }); }
 }
 
 async function tgSend(text, buttons) {
@@ -112,15 +108,13 @@ async function tgSend(text, buttons) {
   const body = { chat_id: TG_CHAT, text, parse_mode: 'HTML' };
   if (buttons) body.reply_markup = { inline_keyboard: buttons };
   await fetch(`https://api.telegram.org/bot${TG_BOT}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }).catch(e => console.error('TG send error', e));
 }
 
 // ===================== ROUTES =====================
 
-// Register
+// Register with 200 KSH reward (locked until first deposit ≥ 500)
 app.post('/api/register', async (req, res) => {
   const { name, email, password, referrerEmail } = req.body || {};
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required' });
@@ -134,14 +128,14 @@ app.post('/api/register', async (req, res) => {
     password: hashed,
     referredBy: ref,
     balance: 0,
-    earning: 0,
-    lockedBonus: 0,
+    earning: 200,       // reward immediately
+    lockedBonus: 200,   // locked until first deposit
     firstDepositMade: false
   });
   await user.save();
 
   const token = jwt.sign({ email: user.email }, SECRET, { expiresIn: '7d' });
-  res.json({ message: 'Registered successfully', token, email: user.email });
+  res.json({ message: 'Registered successfully. 200 KSH reward added (locked until first deposit)', token, email: user.email });
 });
 
 // Login
@@ -181,7 +175,7 @@ app.post('/api/deposit', auth, async (req, res) => {
   res.json({ message: 'Deposit submitted. Wait for admin approval' });
 });
 
-// Approve deposit
+// Approve deposit and unlock registration reward
 app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   const { id, action } = req.params;
   const token = req.query.token;
@@ -199,9 +193,16 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
     const u = await User.findOne({ email: deposit.email });
     if (u) {
       u.balance += Number(deposit.amount);
-      u.firstDepositMade = true;
+
+      if (!u.firstDepositMade && deposit.amount >= 500) {
+        u.earning += u.lockedBonus; // unlock 200 KSH reward
+        u.lockedBonus = 0;
+        u.firstDepositMade = true;
+      }
+
       await u.save();
 
+      // Referral reward
       if (u.referredBy) {
         const refUser = await User.findOne({ email: u.referredBy });
         if (refUser) {
@@ -218,13 +219,20 @@ app.get('/api/admin/deposits/:id/:action', async (req, res) => {
   res.send(`Deposit ${deposit.status}`);
 });
 
-// Withdraw
+// Withdraw (only from earnings)
 app.post('/api/withdraw', auth, async (req, res) => {
   const { amount, phone } = req.body || {};
   if (!amount || !phone) return res.status(400).json({ error: 'amount & phone required' });
 
   const u = await User.findOne({ email: req.user.email });
   if (!u) return res.status(404).json({ error: 'User not found' });
+
+  // Withdrawals allowed Mon-Fri only
+  const today = new Date().getDay(); // 0=Sun, 6=Sat
+  if (today === 0 || today === 6) return res.status(400).json({ error: 'Withdrawals allowed Monday to Friday only' });
+
+  if (!u.firstDepositMade) return res.status(400).json({ error: 'Cannot withdraw until first deposit ≥ 500 KSH' });
+
   if (u.earning < Number(amount)) return res.status(400).json({ error: 'Insufficient earnings balance' });
 
   const pending = await Withdrawal.findOne({ email: u.email, status: 'PENDING' });
@@ -243,7 +251,7 @@ app.post('/api/withdraw', auth, async (req, res) => {
   res.json({ message: 'Withdrawal submitted' });
 });
 
-// Approve withdraw
+// Approve withdrawal
 app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   const { id, action } = req.params;
   const token = req.query.token;
@@ -268,7 +276,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   res.send(`Withdrawal ${w.status}`);
 });
 
-// Daily earnings
+// Daily earnings 12:00 AM Nairobi
 async function runDailyEarnings() {
   const users = await User.find();
   const today = new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Nairobi' });
