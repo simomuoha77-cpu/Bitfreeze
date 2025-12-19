@@ -128,7 +128,7 @@ app.post('/api/register', async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required' });
 
   const hashed = await bcrypt.hash(password, 10);
-  const ref = referrerEmail?.trim() || undefined;
+  const ref = referrerEmail?.trim() || null;
 
   const user = new User({ 
     name, 
@@ -320,7 +320,7 @@ app.get('/api/admin/withdrawals/:id/:action', async (req, res) => {
   res.send(`Withdrawal ${w.status}`);
 });
 
-// Daily earnings 12:00 AM Nairobi
+// Daily earnings at 12:00 AM Nairobi (every 24 hours)
 async function runDailyEarnings() {
   const users = await User.find();
   const today = new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Nairobi' });
@@ -339,12 +339,16 @@ async function runDailyEarnings() {
   }
 }
 
+// Run daily earnings on server start to ensure it's up to date
+runDailyEarnings();
+
+// Check every minute if it's 00:00 Nairobi time
 setInterval(async () => {
   const now = new Date();
   const hours = now.toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: 'Africa/Nairobi' });
   const minutes = now.toLocaleString('en-US', { minute: '2-digit', timeZone: 'Africa/Nairobi' });
   if (Number(hours) === 0 && Number(minutes) === 0) await runDailyEarnings();
-}, 5601000);
+}, 60000); // 60000 ms = 1 minute
 
 // Status
 app.get('/api/status', (req, res) => res.json({ status: 'ok', time: Date.now(), till: MPESA_TILL, name: MPESA_NAME }));
