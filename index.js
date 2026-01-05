@@ -12,7 +12,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.BF_SECRET || 'bitfreeze_dev_secret';
-const DOMAIN = process.env.DOMAIN || 'https://bitfreeze-production.up.railway.app';
+const DOMAIN = process.env.DOMAIN || 'https://bitfreezee.onrender.com';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin-pass';
 
 // Telegram
